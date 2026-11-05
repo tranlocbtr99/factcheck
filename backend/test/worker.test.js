@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import worker,{extractGrounding,validateAssessment,Budget,providerError} from '../src/worker.js';
+import worker,{extractGrounding,validateAssessment,Budget,providerError,validateKnowledgeAssessment} from '../src/worker.js';
 test('health reports missing credentials honestly',async()=>{let r=await worker.fetch(new Request('https://test/health'),{});assert.equal((await r.json()).status,'unconfigured');});
 test('never permit unauthenticated paid requests',async()=>{let r=await worker.fetch(new Request('https://test/verify',{method:'POST',body:'{}'}),{GEMINI_API_KEY:'test',ACCESS_TOKEN:'secret'});assert.equal(r.status,401);});
 test('source must be https and linked to a grounded segment',()=>{assert.deepEqual(extractGrounding({candidates:[{groundingMetadata:{groundingChunks:[{web:{uri:'javascript:alert(1)',title:'x'}},{web:{uri:'https://example.org',title:'x'}}],groundingSupports:[]}}]}),[]);});
@@ -8,16 +8,17 @@ test('unsupported confident verdict is downgraded without repeating assertions',
 test('only grounding sources selected by assessment survive',()=>{let r=validateAssessment({verdict:'DUNG',shortExplanation:'Có nguồn',detailedExplanation:'Chi tiết',sourceIds:[0,99]},[{id:0,url:'https://example.org'}],'Câu gốc');assert.equal(r.references.length,1);assert.equal(r.verdict,'DUNG');});
 test('invalid verdict fails closed',()=>assert.throws(()=>validateAssessment({verdict:'FAKE'},[],'x')));
 test('daily budget blocks after configured limit',async()=>{let value;let storage={transaction:async f=>f({get:async()=>value,put:async(k,v)=>{value=v;}})};let b=new Budget({storage},{DAILY_LIMIT:'1'});assert.equal((await b.fetch()).status,200);assert.equal((await b.fetch()).status,429);});
-test('one Gemini call returns the verdict, explanation and only metadata-linked sources',async t=>{
+test('one Gemini request assesses without Search and discards generated citations',async t=>{
  const originalFetch=globalThis.fetch;t.after(()=>{globalThis.fetch=originalFetch});let calls=0;
  globalThis.fetch=async(url,init)=>{
-  calls++;const body=JSON.parse(init.body);assert.ok(body.tools[0].google_search);assert.equal(body.generationConfig.responseMimeType,'application/json');assert.ok(body.generationConfig.responseJsonSchema);
-  return Response.json({candidates:[{content:{parts:[{text:JSON.stringify({verdict:'DUNG',shortExplanation:'Có bằng chứng',detailedExplanation:'Phân tích',limitations:'',references:[{url:'https://invented.test'}]})}]},groundingMetadata:{groundingChunks:[{web:{uri:'https://www.cancer.gov/about-cancer/treatment',title:'NCI'}}],groundingSupports:[{segment:{text:'Không có bằng chứng chữa khỏi.'},groundingChunkIndices:[0]}],searchEntryPoint:{renderedContent:'<div>Search</div>'}}}]});
+  calls++;const body=JSON.parse(init.body);assert.equal(body.tools,undefined);assert.equal(body.toolConfig,undefined);
+  assert.deepEqual(body.generationConfig.responseJsonSchema.properties.verdict.enum,['DUNG','SAI']);
+  return Response.json({candidates:[{content:{parts:[{text:JSON.stringify({verdict:'DUNG',shortExplanation:'Nhận định',detailedExplanation:'Giải thích',limitations:'',references:[{url:'https://invented.test'}]})}]},groundingMetadata:{searchEntryPoint:{renderedContent:'<div>Search</div>'}}}]});
  };
  const env={GEMINI_API_KEY:'test',ACCESS_TOKEN:'secret',BUDGET:{idFromName:()=>0,get:()=>({fetch:async()=>new Response('{}')})}};
  const claim='Nước chanh không chữa khỏi ung thư.';
- const r=await worker.fetch(new Request('https://test/verify',{method:'POST',headers:{Authorization:'Bearer secret'},body:JSON.stringify({claim})}),env);
- assert.equal(r.status,200);const data=await r.json();assert.equal(data.normalizedClaim,claim);assert.equal(data.verdict,'DUNG');assert.equal(data.references.length,1);assert.equal(data.references[0].url,'https://www.cancer.gov/about-cancer/treatment');assert.equal(data.references[0].publishDate,'');assert.equal(data.searchEntryPoint,'<div>Search</div>');assert.equal(calls,1);
+ const r=await worker.fetch(new Request('https://test/assess',{method:'POST',headers:{Authorization:'Bearer secret'},body:JSON.stringify({claim})}),env);
+ assert.equal(r.status,200);const data=await r.json();assert.equal(data.normalizedClaim,claim);assert.equal(data.verdict,'DUNG');assert.deepEqual(data.references,[]);assert.equal(data.searchEntryPoint,'');assert.equal(data.assessmentMode,'model_knowledge');assert.match(data.limitations,/chưa đối chiếu/);assert.equal(calls,1);
 });
 test('AI outage returns an error rather than a fabricated fact check',async t=>{
  const originalFetch=globalThis.fetch;t.after(()=>{globalThis.fetch=originalFetch});globalThis.fetch=async()=>new Response('{}',{status:429});
@@ -29,12 +30,12 @@ test('configured connection authenticates without spending quota',async()=>{
  const r=await worker.fetch(new Request('https://test/connection',{method:'POST',headers:{Authorization:'Bearer secret'},body:'{}'}),{GEMINI_API_KEY:'test',ACCESS_TOKEN:'secret'});
  assert.equal(r.status,200);assert.equal((await r.json()).status,'ready');
 });
-test('a one-call verdict without linked evidence becomes insufficient',async t=>{
+test('a source-free false judgement remains false and carries a model-only notice',async t=>{
  const originalFetch=globalThis.fetch;t.after(()=>{globalThis.fetch=originalFetch});let calls=0;
  globalThis.fetch=async()=>{calls++;return Response.json({candidates:[{content:{parts:[{text:JSON.stringify({verdict:'SAI',shortExplanation:'Kết luận không có nguồn',detailedExplanation:'Không tìm được nguồn.'})}]}}]});};
  const env={GEMINI_API_KEY:'test',ACCESS_TOKEN:'secret',BUDGET:{idFromName:()=>0,get:()=>({fetch:async()=>new Response('{}')})}};
  const claim='Tin mới chưa có nguồn';const r=await worker.fetch(new Request('https://test/verify',{method:'POST',headers:{Authorization:'Bearer secret'},body:JSON.stringify({claim})}),env);
- const data=await r.json();assert.equal(r.status,200);assert.equal(calls,1);assert.equal(data.verdict,'CHUA_DU_BANG_CHUNG');assert.deepEqual(data.references,[]);assert.equal(data.normalizedClaim,claim);
+ const data=await r.json();assert.equal(r.status,200);assert.equal(calls,1);assert.equal(data.verdict,'SAI');assert.deepEqual(data.references,[]);assert.equal(data.assessmentMode,'model_knowledge');assert.match(data.limitations,/chưa đối chiếu/);assert.equal(data.normalizedClaim,claim);
 });
 test('malformed upstream JSON returns 502 without a verdict',async t=>{
  const originalFetch=globalThis.fetch;t.after(()=>{globalThis.fetch=originalFetch});globalThis.fetch=async()=>new Response('<html>outage</html>');
@@ -88,4 +89,13 @@ test('Google Fact Check Tools is not accepted as verification evidence',()=>{
  const metadata={groundingChunks:[{web:{uri:'https://toolbox.google.com/factcheck/explorer',title:'Fact Check Tools'}}],groundingSupports:[{groundingChunkIndices:[0],segment:{text:'Search'}}]};
  assert.deepEqual(extractGrounding({candidates:[{groundingMetadata:metadata}]}),[]);
  const result=validateAssessment({verdict:'DUNG',shortExplanation:'x',detailedExplanation:'y',sourceIds:[0]},[{id:0,url:'https://toolbox.google.com/factcheck/explorer'}],'Claim');assert.equal(result.verdict,'CHUA_DU_BANG_CHUNG');
+});
+
+test('no-Search assessment accepts only real binary provider output with explanations',()=>{
+ for(const verdict of ['DUNG','SAI']) {
+  const data=validateKnowledgeAssessment({verdict,shortExplanation:'Nhận định',detailedExplanation:'Giải thích',evidence:'online proof',references:[{url:'https://invented.test'}]},'Không đổi câu gốc');
+  assert.equal(data.verdict,verdict);assert.equal(data.evidence,'');assert.deepEqual(data.references,[]);
+ }
+ for(const raw of [{verdict:'UNKNOWN'}, {verdict:'CHUA_DU_BANG_CHUNG',shortExplanation:'x',detailedExplanation:'y'}, {verdict:'DUNG',shortExplanation:' ',detailedExplanation:'y'}])
+  assert.throws(()=>validateKnowledgeAssessment(raw,'Original'));
 });

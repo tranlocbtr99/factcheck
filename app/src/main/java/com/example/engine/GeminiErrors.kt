@@ -85,7 +85,7 @@ internal object GeminiErrors {
                 )
             400 ->
                 FactCheckException(
-                    "Gemini không chấp nhận yêu cầu (400). Kiểm tra mô hình có hỗ trợ Google Search và kết quả JSON, cùng cấu hình dự án.",
+                    "Gemini không chấp nhận yêu cầu (400). Kiểm tra mô hình có hỗ trợ tạo nội dung JSON, cùng cấu hình dự án.",
                     pauseMonitoring = true,
                     reason = "INVALID_REQUEST",
                 )

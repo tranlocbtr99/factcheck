@@ -768,6 +768,14 @@ class FloatingAssistantService : Service() {
 
     private fun showResult(record: FactCheckRecord) {
         val p = createPanel()
+        if (record.references.isEmpty()) {
+            p.addView(TextView(this).apply {
+                text = KnowledgeAssessment.NOTICE
+                textSize = 12f
+                setTextColor(0xFF465468.toInt())
+                setPadding(0, dp(4), 0, dp(4))
+            })
+        }
         row(p, record.verdict.titleVi + "\n" + record.shortExplanation.take(220)) {
             openResult(record)
         }
@@ -781,7 +789,7 @@ class FloatingAssistantService : Service() {
                 }
             }
         }
-        row(p, "Xem bằng chứng và nguồn") { openResult(record) }
+        row(p, "Xem nhận định và giải thích") { openResult(record) }
         row(p, "Đóng") {}
         if (record.isAlerted) {
             val pending =

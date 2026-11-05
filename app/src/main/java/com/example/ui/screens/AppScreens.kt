@@ -119,7 +119,7 @@ fun DashboardScreen(
     val draft by viewModel.draft.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val history by viewModel.allHistory.collectAsStateWithLifecycle()
-    Page("Kiểm chứng.\nHiểu rõ hơn.", "Đọc bằng chứng trước khi tin và chia sẻ.") {
+    Page("Kiểm chứng.\nHiểu rõ hơn.", "Gemini nhận định Đúng/Sai và giải thích, không dùng Search.") {
         Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Shield, null, tint = MaterialTheme.colorScheme.primary)
@@ -132,7 +132,7 @@ fun DashboardScreen(
             }
             Caption(
                 if (connection.configured)
-                    "Mỗi kết luận được đối chiếu với nguồn truy xuất. Việc lưu kết nối chưa xác nhận dịch vụ hoạt động."
+                    "Nhận định của Gemini dựa trên kiến thức sẵn có, chưa đối chiếu nguồn bên ngoài. Việc lưu kết nối chưa xác nhận dịch vụ hoạt động."
                 else "Mở Cài đặt để dùng khóa Gemini cá nhân hoặc kết nối máy chủ riêng."
             )
         }
@@ -177,7 +177,7 @@ fun DashboardScreen(
                     )
                     Spacer(Modifier.width(10.dp))
                 }
-                Text(if (busy) "Đang xử lý…" else "Kiểm chứng với nguồn")
+                Text(if (busy) "Đang xử lý…" else "Nhận định Đúng / Sai")
             }
             if (busy) TextButton(onClick = { viewModel.cancelCheck() }) { Text("Hủy yêu cầu") }
         }
@@ -190,7 +190,7 @@ fun DashboardScreen(
             )
             Text(state.status.displayNameVi, color = MaterialTheme.colorScheme.primary)
             Caption(
-                "Bật đọc liên tục rồi cấp quyền chia sẻ. App trích chữ trên màn hình, gửi nội dung mới đến Gemini và trả kết luận, giải thích cùng đường dẫn nguồn."
+                "Bật đọc liên tục rồi cấp quyền chia sẻ. App trích chữ trên màn hình, gửi nội dung mới đến Gemini và trả nhận định Đúng/Sai cùng giải thích. Không dùng Search."
             )
             Button(
                 onClick = {
@@ -325,7 +325,7 @@ fun HistoryScreen(viewModel: FactCheckViewModel, onNavigateToDetail: (String) ->
             item {
                 Panel {
                     Text("Chưa có kết quả phù hợp")
-                    Caption("Kết quả kiểm chứng thực tế sẽ xuất hiện ở đây. Không có lịch sử mẫu.")
+                    Caption("Nhận định Đúng/Sai của Gemini sẽ xuất hiện ở đây.")
                 }
             }
         items(records, key = { it.id }) { RecordRow(it) { onNavigateToDetail(it.id) } }
@@ -363,7 +363,8 @@ fun FactCheckDetailScreen(
                 color = record.verdict.color,
                 fontWeight = FontWeight.Bold,
             )
-            Caption("Kiểm tra lúc " + date(record.checkedAt) + " • " + record.sourceApp)
+            Caption("Đánh giá lúc " + date(record.checkedAt) + " • " + record.sourceApp)
+            if (record.references.isEmpty()) Caption(com.example.engine.KnowledgeAssessment.NOTICE)
             Text(
                 record.originalClaim,
                 style = MaterialTheme.typography.titleLarge,
@@ -383,8 +384,8 @@ fun FactCheckDetailScreen(
                     Text("Đối chiếu và phản chứng", fontWeight = FontWeight.Bold)
                     Text(record.counterEvidence)
                 }
-            Text(
-                "Nguồn truy xuất · ${record.references.size}",
+            if (record.references.isNotEmpty()) Text(
+                "Nguồn đã lưu · ${record.references.size}",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
@@ -422,7 +423,7 @@ fun FactCheckDetailScreen(
                 Text("Hỏi tiếp về hồ sơ này")
             }
             OutlinedButton(onClick = onRecheck, modifier = Modifier.fillMaxWidth()) {
-                Text("Kiểm chứng lại với nguồn mới")
+                Text("Đánh giá lại bằng Gemini")
             }
             Spacer(Modifier.height(20.dp))
         }
@@ -779,7 +780,7 @@ fun SettingsScreen(viewModel: FactCheckViewModel, onRequestOverlayPermission: ()
                 Text("Xóa toàn bộ lịch sử", color = MaterialTheme.colorScheme.error)
             }
         }
-        Caption("LTM FactCheck 3.1 • Kiểm chứng có nguồn • Designed by LocTM")
+        Caption("LTM FactCheck 3.2 • Gemini không Search • Designed by LocTM")
     }
     if (clear)
         AlertDialog(

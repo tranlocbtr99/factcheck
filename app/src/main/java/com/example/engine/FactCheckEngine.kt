@@ -117,42 +117,12 @@ class FactCheckEngine(private val settings: AppSettings) {
         val claim = extractedClaim.trim()
         if (claim.isEmpty() || claim.length > 12000)
             throw FactCheckException("Nhập nội dung từ 1 đến 12.000 ký tự.")
-        val o = request("/verify", JSONObject().put("claim", claim))
-        val refs = mutableListOf<ReferenceSource>()
-        val a = o.optJSONArray("references") ?: JSONArray()
-        for (i in 0 until a.length()) {
-            val r = a.getJSONObject(i)
-            val url = r.optString("url")
-            if (!GroundedResponse.validUrl(url)) continue
-            refs.add(
-                ReferenceSource(
-                    r.optString("title"),
-                    url,
-                    r.optString("publisher"),
-                    r.optString("publishDate"),
-                    r.optString("supportingSnippet"),
-                    false,
-                )
-            )
-        }
-        val verdict =
-            FactCheckVerdict.entries.firstOrNull { it.name == o.opt("verdict") }
-                ?: throw FactCheckException("Kết quả AI có kết luận không hợp lệ. Hãy thử lại.")
-        if (
-            (o.opt("shortExplanation") as? String).isNullOrBlank() ||
-                (o.opt("detailedExplanation") as? String).isNullOrBlank()
+        val o = KnowledgeAssessment.validate(
+            request("/assess", JSONObject().put("claim", claim).put("mode", KnowledgeAssessment.MODE)),
+            requireMode = true,
         )
-            throw FactCheckException("Kết quả AI thiếu phần giải thích. Hãy thử lại.")
-        if (
-            verdict in
-                listOf(
-                    FactCheckVerdict.DUNG,
-                    FactCheckVerdict.SAI,
-                    FactCheckVerdict.GAY_HIEU_LAM,
-                    FactCheckVerdict.DUNG_MOT_PHAN,
-                ) && refs.isEmpty()
-        )
-            throw FactCheckException("Kết quả chưa có nguồn hỗ trợ hợp lệ. Hãy thử kiểm chứng lại.")
+        val refs = emptyList<ReferenceSource>()
+        val verdict = FactCheckVerdict.valueOf(o.getString("verdict"))
         val s = settings.monitoring.value
         val alert =
             when (verdict) {

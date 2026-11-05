@@ -50,3 +50,11 @@ Quy ước: [x] chỉ khi có bằng chứng; việc báo cáo trước nhưng c
 - [x] T18: bỏ Fact Check Tools khỏi nguồn kiểm chứng mới và liên kết hồ sơ cũ; prompt yêu cầu Gemini tìm bài gốc, không chuyển hướng tra cứu thay kết luận.
 - [x] T19: 28 Android tests, 20 backend tests; kiểm tra các loại quota, thông tin bí mật không lọt vào thông báo, chờ tăng dần và chặn nguồn không muốn dùng.
 - [ ] T20: xác định quota thật bằng bản mới trên thiết bị và chạy một lần kiểm chứng có nguồn sau khi project/model có quota. Không thể sửa quota tài khoản chỉ bằng APK.
+
+## Đợt 3.2.0 — nhận định Đúng/Sai không Search
+Yêu cầu mới thay thế yêu cầu tìm nguồn ở các mốc trước.
+- [x] T21: thay request Gemini bằng model-only, bỏ Search/tools và nguồn; binary verdict DUNG/SAI với giải thích.
+- [x] T22: cập nhật engine/UI/popup, nhãn chưa đối chiếu nguồn, không yêu cầu references để nhận Đúng/Sai; giữ lịch sử cũ.
+- [x] T23: thêm test cho contract không Search và sửa test UI/backend liên quan.
+- [ ] T24: chạy CI và xử lý lỗi; chưa có kết quả test của 3.2.0.
+- [ ] T25: build APK ký 3.2.0 khi môi trường build trở lại, đối chiếu khóa cũ, bàn giao và thử trên iQOO.

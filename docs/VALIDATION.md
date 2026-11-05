@@ -43,3 +43,10 @@ Source commits: b2ae32b (continuous OCR + single Gemini request), f10a0fb (cache
 - Physical-device pause/resume and live quota diagnostics remain unverified until the new build is installed. No provider credentials are in source or APK.
 
 - Final testDebugUnitTest/lintDebug/assembleRelease: BUILD SUCCESSFUL. Lint: 0 errors, 46 warnings. APK vn.ltm.factcheck 3.1.1/30101; SHA-256 54b99f3dae79ddaccefe11cb93d5bbd5d1c450893a3a4673d39030595a10cc32; apksigner passed, certificate matches 2.1.0 (603bef85b172df9d535a0ef70fe31f1e65356082fc971cbf2ee13caa689a495a).
+
+## 3.2.0 — model-only binary judgement (pending validation)
+User now requests DUNG/SAI with explanation and no Search/sources. Requests have no tools; new results carry assessmentMode=model_knowledge and a fixed external-verification disclaimer. Existing grounded tests cover only historical parsers, not the new evaluation path.
+
+New tests cover no-tools request/schema, source-free binary results, stripping generated evidence/links, invalid output and an old-backend mode mismatch. Backend and UI tests are adjusted for the new contract.
+
+Local execution environment is unavailable. No local tests, APK signing or live provider checks have run for 3.2.0. Follow CI for the new commit. Previous 28/20 passes and APK 3.1.1 do not validate these changes. Release signing remains blocked until the original environment/key is available.

@@ -30,7 +30,7 @@ class UiSmokeTest {
     fun lightNavigationAndUnconfiguredState() {
         render()
         compose.onNodeWithText("Cần thiết lập kết nối").assertIsDisplayed()
-        compose.onNodeWithText("Kiểm chứng với nguồn").assertIsNotEnabled()
+        compose.onNodeWithText("Nhận định Đúng / Sai").assertIsNotEnabled()
         compose.onNodeWithTag("nav_history").performClick()
         compose.onNodeWithText("Chưa có kết quả phù hợp").assertExists()
         compose.onNodeWithTag("nav_settings").performClick()
