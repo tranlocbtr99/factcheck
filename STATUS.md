@@ -22,3 +22,9 @@ Cập nhật: 05/11/2026 (giờ Việt Nam).
 - Bước tiếp: xem CI; khi môi trường build phục hồi, build 3.2.0 bằng khóa cũ, kiểm tra chữ ký, lưu APK và thử trực tiếp trên thiết bị.
 
 - CI đầu tiên (42055486668) lỗi trước khi build: setup-android mặc định yêu cầu package `tools` đã không còn. Đã đổi sang `platform-tools`, tách job backend và chạy lại CI. JavaScript syntax + hàm đánh giá model-only đã được kiểm tra trực tiếp trong runtime điều phối.
+
+## Bàn giao APK thử 3.2.0
+- CI https://github.com/tranlocbtr99/factcheck/actions/runs/42055980251 đã thành công cả backend và Android cho code không Search. Backend 21/21 test; cần xem báo cáo để lấy số Android chính xác.
+- GitHub chỉ có khóa debug, không có khóa release cũ. Debug variant được đổi thành vn.ltm.factcheck.preview, tên LTM FactCheck thử nghiệm để cài song song mà không gỡ/ghi đè app cũ. Release variant vẫn vn.ltm.factcheck và giữ cấu hình khóa ký cũ.
+- APK preview có dữ liệu/cài đặt riêng, cần nhập lại API key; không tự chuyển lịch sử hoặc khóa từ app cũ. Đây không phải APK nâng cấp cài đè.
+- CI mới sẽ đóng gói artifact LTMFactCheck-3.2.0-preview-apk chỉ chứa một APK. Chờ kết quả trước khi gửi file.

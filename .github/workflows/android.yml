@@ -43,9 +43,20 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: sdkmanager 'platforms;android-36.1' 'build-tools;36.0.0'
       - run: ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --no-configuration-cache
+      - name: Prepare installable preview APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/LTMFactCheck-3.2.0-preview.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/LTMFactCheck-3.2.0-preview.apk
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging dist/LTMFactCheck-3.2.0-preview.apk > dist/badging.txt
+          sed -n '1p' dist/badging.txt
+          sha256sum dist/LTMFactCheck-3.2.0-preview.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: android-debug-and-reports
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/reports/
+          name: LTMFactCheck-3.2.0-preview-apk
+          compression-level: 0
+          path: dist/LTMFactCheck-3.2.0-preview.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: app/build/reports/
