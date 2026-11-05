@@ -15,7 +15,7 @@ Cập nhật: 05/11/2026 (giờ Việt Nam).
 - Giữ OCR 3 giây, chống trùng nội dung, hàng chờ mới nhất và xử lý quota của 3.1.1.
 
 ## Kiểm tra / bàn giao
-- Môi trường exec/build cục bộ hiện unavailable. Chưa chạy test/build APK ký cho 3.2.0; không dùng số test 3.1.1 làm bằng chứng cho thay đổi mới.
+- Môi trường exec/build cục bộ hiện unavailable. Đã build và kiểm thử 3.2.0 qua GitHub CI; đã có APK preview cài song song, chưa có APK release cài đè bằng khóa cũ.
 - Đã bổ sung test no-tools, binary verdict không cần nguồn, bỏ nguồn giả, lỗi output sai định dạng và từ chối backend cũ thiếu mode. CI cần chạy trên commit này.
 - APK ký gần nhất vẫn là 3.1.1; bản đó còn Search, không đáp ứng yêu cầu mới.
 - Chưa gọi Gemini thật hoặc kiểm tra trên iQOO. Không đưa khóa API/khóa ký lên git.
@@ -27,4 +27,7 @@ Cập nhật: 05/11/2026 (giờ Việt Nam).
 - CI https://github.com/tranlocbtr99/factcheck/actions/runs/42055980251 đã thành công cả backend và Android cho code không Search. Backend 21/21 test; cần xem báo cáo để lấy số Android chính xác.
 - GitHub chỉ có khóa debug, không có khóa release cũ. Debug variant được đổi thành vn.ltm.factcheck.preview, tên LTM FactCheck thử nghiệm để cài song song mà không gỡ/ghi đè app cũ. Release variant vẫn vn.ltm.factcheck và giữ cấu hình khóa ký cũ.
 - APK preview có dữ liệu/cài đặt riêng, cần nhập lại API key; không tự chuyển lịch sử hoặc khóa từ app cũ. Đây không phải APK nâng cấp cài đè.
-- CI mới sẽ đóng gói artifact LTMFactCheck-3.2.0-preview-apk chỉ chứa một APK. Chờ kết quả trước khi gửi file.
+- CI preview đã thành công: https://github.com/tranlocbtr99/factcheck/actions/runs/42059523750 . APK: https://github.com/tranlocbtr99/factcheck/actions/runs/42059523750/artifacts/13431701505 (ZIP chỉ chứa LTMFactCheck-3.2.0-preview.apk).
+
+- APK preview đã kiểm tra chữ ký và package: vn.ltm.factcheck.preview / 3.2.0-preview / 30200. SHA-256 APK 6f1754d73a1b8f5b5098f66d6a3e6ff37dbb67928e5268a7f84db7994ba53d41. Chứng thư debug 001de2cc2f4d7930c85f4915d4c9f199df106720c87f617442c675876cc56b97, khác release cũ; chỉ cài song song. Backend và Android CI thành công. Đã sửa test tên app theo debug/release variant.
+- APK release cài đè bằng khóa cũ vẫn chưa build được do môi trường cục bộ unavailable; không gỡ app cũ để cài preview. Cần nhập API key ở app mới.
