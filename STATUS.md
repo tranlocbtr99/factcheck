@@ -2,7 +2,7 @@
 Cập nhật: 05/11/2026 (giờ Việt Nam).
 
 ## Mốc mã nguồn
-- Nhánh triển khai: feat/complete-grounded-verification. Chủ nhân đã cho phép đưa mã lên GitHub và tạo PR; main giữ nguyên đến khi PR được chấp thuận.
+- Nhánh triển khai: feat/complete-grounded-verification. Đã đồng bộ lên GitHub tại commit 58c9d169601dfb16fc221a697111f3cb6832ea8d; PR #1: https://github.com/tranlocbtr99/factcheck/pull/1. main giữ nguyên đến khi PR được chấp thuận.
 - Đã tìm lại commit 2004b41 trong workspace phiên trước, hợp nhất với main tại 44c96e6. Hai nhánh trên GitHub lúc kiểm tra đều chưa chứa đợt sửa đó.
 - Commit sửa lõi mới: c814856. Phiên bản 3.0.1, versionCode 30001, applicationId vn.ltm.factcheck.
 - APK 2.1.0 đã đối chiếu package và chứng thư. Chưa xác định được commit nguồn của APK cũ; không suy diễn nó trùng main cũ.
@@ -25,7 +25,7 @@ Cập nhật: 05/11/2026 (giờ Việt Nam).
 - T04: chưa có cấu hình AI hợp lệ để gọi trực tuyến. Có thể nhập khóa Gemini cá nhân trong Cài đặt trên điện thoại hoặc cấu hình Worker riêng. Kiểm tra kết nối không thay thế một lần kiểm chứng thật có nguồn.
 - T06/T07/T10: cần thiết bị để kiểm tra hình ảnh UI, cài nâng cấp giữ dữ liệu, quyền chiếu màn hình, âm thanh và chạy nền trên iQOO. Không có thiết bị adb trong phiên này.
 - Chưa triển khai backend, chưa chứng minh độ chính xác bằng tập dữ liệu gán nhãn. Không báo app đã nghiệm thu toàn bộ.
-- Bước tiếp theo: đồng bộ nhánh feat/complete-grounded-verification và tạo PR theo xác nhận của Chủ nhân. Sau đó một lần kiểm chứng trực tuyến có nguồn, kiểm tra cập nhật từ 2.1.0 trên thiết bị và mở nguồn gốc đối chiếu.
+- Bước tiếp theo: theo dõi kiểm tra của PR #1; thực hiện một lần kiểm chứng trực tuyến có nguồn, kiểm tra cập nhật từ 2.1.0 trên thiết bị và mở nguồn gốc đối chiếu.
 
 ## Quy trình tiết kiệm hạn mức
 - Đọc STATUS và TASKS trước; kiểm tra HEAD và diff liên quan khi khác mốc. Không rà toàn dự án mỗi lần.
