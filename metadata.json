@@ -1,0 +1,6 @@
+{
+  "name": "LTM FactCheck AI",
+  "description": "Android Native AI Fact-Checking Assistant with floating assistant, real-time screen verification, claim extraction, liquid glass UI and sources.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
