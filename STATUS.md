@@ -20,3 +20,5 @@ Cập nhật: 05/11/2026 (giờ Việt Nam).
 - APK ký gần nhất vẫn là 3.1.1; bản đó còn Search, không đáp ứng yêu cầu mới.
 - Chưa gọi Gemini thật hoặc kiểm tra trên iQOO. Không đưa khóa API/khóa ký lên git.
 - Bước tiếp: xem CI; khi môi trường build phục hồi, build 3.2.0 bằng khóa cũ, kiểm tra chữ ký, lưu APK và thử trực tiếp trên thiết bị.
+
+- CI đầu tiên (42055486668) lỗi trước khi build: setup-android mặc định yêu cầu package `tools` đã không còn. Đã đổi sang `platform-tools`, tách job backend và chạy lại CI. JavaScript syntax + hàm đánh giá model-only đã được kiểm tra trực tiếp trong runtime điều phối.
