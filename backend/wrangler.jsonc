@@ -1,0 +1,8 @@
+{
+  "name": "ltm-factcheck-api",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-01",
+  "vars": { "GEMINI_MODEL": "gemini-3.8-flash", "DAILY_LIMIT": "100" },
+  "durable_objects": { "bindings": [{ "name": "BUDGET", "class_name": "Budget" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Budget"] }]
+}

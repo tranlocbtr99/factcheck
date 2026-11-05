@@ -2,9 +2,7 @@ package com.example.model
 
 import java.util.UUID
 
-/**
- * Bản ghi kiểm chứng thông tin hoàn chỉnh
- */
+/** Bản ghi kiểm chứng thông tin hoàn chỉnh */
 data class FactCheckRecord(
     val id: String = UUID.randomUUID().toString(),
     val originalClaim: String,
@@ -16,9 +14,11 @@ data class FactCheckRecord(
     val counterEvidence: String = "",
     val references: List<ReferenceSource> = emptyList(),
     val checkedAt: Long = System.currentTimeMillis(),
-    val limitations: String = "Kiểm chứng dựa trên các nguồn dữ liệu công khai tại thời điểm phân tích.",
-    val confidence: Float = 0.92f,
+    val limitations: String =
+        "Kiểm chứng dựa trên các nguồn dữ liệu công khai tại thời điểm phân tích.",
+    val searchEntryPoint: String = "",
+    val confidence: Float = 0f,
     val sourceApp: String = "Màn hình trực tiếp",
     val rawScreenText: String = "",
-    val isAlerted: Boolean = false
+    val isAlerted: Boolean = false,
 )

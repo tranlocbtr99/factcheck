@@ -1,0 +1,3 @@
+# Local development only: copy to .dev.vars (gitignored), then set account-owned values.
+GEMINI_API_KEY=replace_with_your_personal_api_key
+ACCESS_TOKEN=replace_with_a_long_random_private_token
