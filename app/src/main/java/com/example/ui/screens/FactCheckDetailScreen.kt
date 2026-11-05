@@ -25,9 +25,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
+import com.example.engine.FactCheckServiceManager
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -85,10 +87,15 @@ fun FactCheckDetailScreen(
                 actions = {
                     if (record != null) {
                         IconButton(onClick = {
+                            FactCheckServiceManager.startService(context, com.example.service.FloatingAssistantService.ACTION_SHOW_RESULT)
+                        }) {
+                            Icon(Icons.Default.Layers, contentDescription = "Xem thẻ nổi", tint = CyanNeon)
+                        }
+                        IconButton(onClick = {
                             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
                                 putExtra(Intent.EXTRA_SUBJECT, "Kiểm chứng: ${record.normalizedClaim}")
-                                putExtra(Intent.EXTRA_TEXT, "🔍 [LTM FactCheck AI]\nTuyên bố: ${record.normalizedClaim}\nKết luận: ${record.verdict.titleVi}\nGiải thích: ${record.shortExplanation}")
+                                putExtra(Intent.EXTRA_TEXT, "🔍 [LTM FactCheck AI]\nKết luận: [${record.verdict.primaryVerdict.titleVi}] ${record.verdict.titleVi}\nTuyên bố: ${record.normalizedClaim}\nGiải thích: ${record.shortExplanation}")
                             }
                             context.startActivity(Intent.createChooser(shareIntent, "Chia sẻ kết quả kiểm chứng"))
                         }) {

@@ -27,6 +27,8 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -66,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.engine.FactCheckServiceManager
 import com.example.model.AnalysisPhase
 import com.example.model.AssistantStatus
 import com.example.model.FactCheckRecord
@@ -91,6 +94,7 @@ fun DashboardScreen(
     viewModel: FactCheckViewModel,
     onRequestOverlayPermission: () -> Unit,
     onRequestMediaProjection: () -> Unit,
+    onRequestAudioPermission: () -> Unit,
     onNavigateToDetail: (String) -> Unit,
     onNavigateToChat: () -> Unit,
     modifier: Modifier = Modifier
@@ -308,6 +312,7 @@ fun DashboardScreen(
                             AnalysisPhase.CAPTURING_FRAME -> "Đang bắt khung hình..."
                             AnalysisPhase.RUNNING_OCR -> "Đang nhận diện chữ viết (OCR)..."
                             AnalysisPhase.EXTRACTING_CLAIMS -> "Đang trích xuất mệnh đề..."
+                            AnalysisPhase.TRANSCRIBING_AUDIO -> "Đang nhận diện âm thanh video..."
                             AnalysisPhase.RETRIEVING_EVIDENCE -> "Đang đối chiếu bằng chứng độc lập..."
                             AnalysisPhase.FINISHED -> "Đã hoàn thành kiểm chứng"
                         }
@@ -389,6 +394,135 @@ fun DashboardScreen(
                                 Text("Dừng", color = VerdictFalseColor)
                             }
                         }
+                    }
+
+                    // Nút quét nhanh & Thu âm thanh video trực tiếp
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        LiquidGlassButton(
+                            onClick = {
+                                if (!assistantState.isOverlayActive) {
+                                    onRequestOverlayPermission()
+                                } else if (!assistantState.isMediaProjectionActive) {
+                                    onRequestMediaProjection()
+                                } else {
+                                    FactCheckServiceManager.startService(context, com.example.service.FloatingAssistantService.ACTION_INSTANT_CHECK)
+                                }
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("scan_now_button")
+                        ) {
+                            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp), tint = CyanNeon)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Chụp & Quét ngay", fontSize = 12.sp)
+                        }
+
+                        val isAudioActive = assistantState.isAudioTranscriptionActive
+                        LiquidGlassButton(
+                            onClick = onRequestAudioPermission,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("toggle_audio_button")
+                        ) {
+                            Icon(
+                                if (isAudioActive) Icons.Default.MicOff else Icons.Default.Mic,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (isAudioActive) VerdictTrueColor else CyanNeon
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (isAudioActive) "Tắt âm video" else "Bật âm video (STT)", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3.5 Bằng chứng đọc dữ liệu màn hình & Âm thanh video thời gian thực
+        item {
+            LiquidGlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "DỮ LIỆU ĐỌC MÀN HÌNH & VIDEO THỰC TẾ",
+                            color = CyanNeon,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Khung hình: #${assistantState.framesCapturedCount}",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    // OCR Màn hình
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0x330F172A))
+                            .border(1.dp, GlassBorder, RoundedCornerShape(8.dp))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = "🔤 Chữ OCR đọc được từ màn hình:",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        val screenTextDisplay = if (assistantState.currentScreenText.isNotBlank()) {
+                            assistantState.currentScreenText
+                        } else {
+                            "Đang theo dõi màn hình... Mở TikTok, YouTube, Facebook để đọc nội dung."
+                        }
+                        Text(
+                            text = screenTextDisplay,
+                            color = TextPrimary,
+                            fontSize = 12.sp,
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+
+                    // Âm thanh video (Speech-to-Text)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0x330F172A))
+                            .border(1.dp, GlassBorder, RoundedCornerShape(8.dp))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = "🎙️ Giọng nói nhận diện từ âm thanh video (STT):",
+                            color = CyanNeon,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        val audioTextDisplay = if (assistantState.liveTranscribedAudio.isNotBlank()) {
+                            assistantState.liveTranscribedAudio
+                        } else if (assistantState.isAudioTranscriptionActive) {
+                            "Đang lắng nghe âm thanh từ video đang phát..."
+                        } else {
+                            "Chưa bật nhận diện âm thanh. Bấm 'Bật âm video' để nhận diện lời nói video."
+                        }
+                        Text(
+                            text = audioTextDisplay,
+                            color = TextPrimary,
+                            fontSize = 12.sp,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
                     }
                 }
             }
@@ -555,6 +689,24 @@ fun DashboardScreen(
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
+
+                            Spacer(modifier = Modifier.height(4.dp))
+                            LiquidGlassButton(
+                                onClick = {
+                                    if (assistantState.isOverlayActive) {
+                                        FactCheckServiceManager.startService(context, com.example.service.FloatingAssistantService.ACTION_SHOW_RESULT)
+                                    } else {
+                                        onRequestOverlayPermission()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("show_overlay_hud_button")
+                            ) {
+                                Icon(Icons.Default.Layers, contentDescription = null, modifier = Modifier.size(16.dp), tint = CyanNeon)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Xem trực tiếp trên màn hình nổi (HUD)", fontSize = 12.sp)
+                            }
                         }
                     }
                 }

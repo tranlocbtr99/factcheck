@@ -19,6 +19,7 @@ enum class AnalysisPhase {
     CAPTURING_FRAME,
     RUNNING_OCR,
     EXTRACTING_CLAIMS,
+    TRANSCRIBING_AUDIO,
     RETRIEVING_EVIDENCE,
     FINISHED
 }
@@ -28,12 +29,15 @@ data class AssistantState(
     val analysisPhase: AnalysisPhase = AnalysisPhase.IDLE,
     val isOverlayActive: Boolean = false,
     val isMediaProjectionActive: Boolean = false,
+    val isAudioTranscriptionActive: Boolean = false,
     val currentScreenText: String = "",
+    val liveTranscribedAudio: String = "",
     val currentClaim: String? = null,
     val latestRecord: FactCheckRecord? = null,
     val totalCheckedCount: Int = 0,
     val totalAlertCount: Int = 0,
     val lastCheckTimestamp: Long = 0L,
+    val framesCapturedCount: Long = 0L,
     val alertMessage: String? = null,
     val currentAppDetected: String = "Thiết bị Android"
 )

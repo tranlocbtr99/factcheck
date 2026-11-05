@@ -41,7 +41,20 @@ object FactCheckServiceManager {
         data object RequestStopMonitoring : UserActionEvent
         data object RequestInstantScreenCheck : UserActionEvent
         data class OpenChatWithScreenContext(val contextText: String) : UserActionEvent
+        data object RequestToggleAudio : UserActionEvent
         data object DismissAlert : UserActionEvent
+    }
+
+    fun setAudioActive(active: Boolean) {
+        _assistantState.update { it.copy(isAudioTranscriptionActive = active) }
+    }
+
+    fun updateLiveAudio(text: String) {
+        _assistantState.update { it.copy(liveTranscribedAudio = text) }
+    }
+
+    fun recordFrameCaptured() {
+        _assistantState.update { it.copy(framesCapturedCount = it.framesCapturedCount + 1) }
     }
 
     fun updateStatus(status: AssistantStatus) {

@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -22,7 +21,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -44,15 +42,21 @@ fun VerdictBadge(
         FactCheckVerdict.KHONG_THE_KIEM_CHUNG -> Icons.Default.Warning
     }
 
-    val iconSize = if (large) 20.dp else 14.dp
+    val iconSize = if (large) 22.dp else 14.dp
     val textStyle = if (large) {
         MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 16.sp)
     } else {
         MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
     }
 
-    val padH = if (large) 14.dp else 10.dp
-    val padV = if (large) 6.dp else 4.dp
+    val padH = if (large) 16.dp else 10.dp
+    val padV = if (large) 8.dp else 4.dp
+
+    val displayText = if (large) {
+        "${verdict.primaryVerdict.titleVi}: ${verdict.titleVi.uppercase()}"
+    } else {
+        verdict.titleVi
+    }
 
     Row(
         modifier = modifier
@@ -70,7 +74,7 @@ fun VerdictBadge(
             modifier = Modifier.size(iconSize)
         )
         Text(
-            text = verdict.titleVi,
+            text = displayText,
             color = verdict.color,
             style = textStyle
         )

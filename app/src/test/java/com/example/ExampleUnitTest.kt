@@ -74,4 +74,11 @@ class ExampleUnitTest {
         assertEquals(FactCheckVerdict.CHUA_DU_BANG_CHUNG, record.verdict)
         assertFalse(record.isAlerted)
     }
+
+    @Test
+    fun testPrimaryVerdict_pillarsMapping() {
+        assertEquals(com.example.model.PrimaryVerdict.SAI, FactCheckVerdict.SAI.primaryVerdict)
+        assertEquals(com.example.model.PrimaryVerdict.DUNG, FactCheckVerdict.DUNG.primaryVerdict)
+        assertEquals(com.example.model.PrimaryVerdict.CHUA_DU_CO_SO, FactCheckVerdict.CHUA_DU_BANG_CHUNG.primaryVerdict)
+    }
 }

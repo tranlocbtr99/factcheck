@@ -105,7 +105,8 @@ class MainActivity : ComponentActivity() {
                     viewModel = viewModel,
                     onLaunchOverlayPermission = { requestOverlayPermission() },
                     onLaunchMediaProjection = { requestMediaProjection() },
-                    onRequestNotificationPermission = { requestNotificationPermission() }
+                    onRequestNotificationPermission = { requestNotificationPermission() },
+                    onRequestAudioPermission = { requestAudioPermission() }
                 )
             }
         }
@@ -115,6 +116,16 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIntentExtras(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val hasOverlay = Settings.canDrawOverlays(this)
+            if (!hasOverlay && FactCheckServiceManager.assistantState.value.isOverlayActive) {
+                FactCheckServiceManager.setOverlayActive(false)
+            }
+        }
     }
 
     private fun handleIntentExtras(intent: Intent?) {
@@ -135,9 +146,15 @@ class MainActivity : ComponentActivity() {
                 startActivity(intent)
             } else {
                 FactCheckServiceManager.startService(this)
+                if (!FactCheckServiceManager.assistantState.value.isMediaProjectionActive) {
+                    requestMediaProjection()
+                }
             }
         } else {
             FactCheckServiceManager.startService(this)
+            if (!FactCheckServiceManager.assistantState.value.isMediaProjectionActive) {
+                requestMediaProjection()
+            }
         }
     }
 
@@ -182,6 +199,25 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Thông báo bị tắt. Bạn có thể bỏ lỡ các cảnh báo sai lệch tức thì.", Toast.LENGTH_SHORT).show()
         }
     }
+
+    private fun requestAudioPermission() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            FactCheckServiceManager.sendUserEvent(FactCheckServiceManager.UserActionEvent.RequestToggleAudio)
+        }
+    }
+
+    private val audioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            FactCheckServiceManager.sendUserEvent(FactCheckServiceManager.UserActionEvent.RequestToggleAudio)
+            Toast.makeText(this, "Đã cấp quyền. Bắt đầu nhận diện âm thanh video!", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Cần quyền ghi âm để chuyển đổi âm thanh video thành văn bản.", Toast.LENGTH_LONG).show()
+        }
+    }
 }
 
 @Composable
@@ -189,7 +225,8 @@ fun MainAppContent(
     viewModel: FactCheckViewModel,
     onLaunchOverlayPermission: () -> Unit,
     onLaunchMediaProjection: () -> Unit,
-    onRequestNotificationPermission: () -> Unit
+    onRequestNotificationPermission: () -> Unit,
+    onRequestAudioPermission: () -> Unit
 ) {
     var currentScreen by remember { mutableStateOf(AppNavScreen.DASHBOARD) }
     val selectedDetailRecord by viewModel.selectedDetailRecord.collectAsStateWithLifecycle()
@@ -266,6 +303,7 @@ fun MainAppContent(
                             viewModel = viewModel,
                             onRequestOverlayPermission = onLaunchOverlayPermission,
                             onRequestMediaProjection = onLaunchMediaProjection,
+                            onRequestAudioPermission = onRequestAudioPermission,
                             onNavigateToDetail = { id -> viewModel.selectRecordForDetail(id) },
                             onNavigateToChat = { currentScreen = AppNavScreen.CHAT }
                         )
