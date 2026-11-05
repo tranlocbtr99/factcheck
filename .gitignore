@@ -16,3 +16,12 @@
 local.properties
 .env
 debug.keystore
+
+*.jks
+*.keystore
+*.p12
+.env.*
+!.env.example
+backend/node_modules/
+backend/.wrangler/
+backend/.dev.vars

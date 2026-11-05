@@ -1,28 +1,30 @@
 # LTM FactCheck — tiến độ
 Cập nhật: 05/11/2026 (giờ Việt Nam).
 
-## Mốc đã đối chiếu
-- Nhánh: main; commit mã nguồn: 9e0e5558e1e0ba0746d1e65ed21fa349bf955004.
-- Commit mô tả bổ sung phiên âm âm thanh và hỗ trợ chiếu màn hình; chưa xác nhận hành vi chạy thực tế trong phiên thiết lập này.
-- app/build.gradle.kts tại commit trên: versionName 1.0, versionCode 1.
-- Đã tạo STATUS.md và TASKS.md để tiếp tục công việc theo từng đợt.
-- Phiên này chỉ thay đổi tài liệu; không build APK, không chạy kiểm thử ứng dụng.
+## Yêu cầu hiện tại
+- Chủ nhân yêu cầu vẫn đưa nhận định ĐÚNG/SAI, không Search và không cần nguồn.
+- Luồng: OCR liên tục → một request Gemini không tools → nhận định Đúng/Sai cùng giải thích.
+- Kết quả phải ghi rõ: nhận định từ kiến thức Gemini, chưa đối chiếu nguồn ngoài; không tự tạo bằng chứng.
 
-## Báo cáo trước đó — cần đối chiếu, chưa coi là bằng chứng nghiệm thu
-- Hội thoại trước báo đã sửa lõi tìm nguồn, Keystore, migration, UI Liquid Glass, nhập chữ/ảnh/âm thanh, lịch sử, chat theo hồ sơ; báo đã build debug và qua 10 test backend.
-- Chưa có commit và log tương ứng để xác nhận các kết quả trên nằm trong main.
-- Hội thoại ghi nhận đã gửi APK 2.1.0; chưa xác định commit nguồn và chữ ký của APK. Không đồng nhất APK này với version 1.0 trong repository.
-- Trước đó báo thiếu API key để kiểm thử trực tuyến và vướng kiểm thử Android; cần kiểm tra lại khi bắt đầu đợt liên quan. Không ghi khóa hay mật khẩu vào tài liệu.
+## Mã mới 3.2.0 / 30200
+- Nhánh feat/complete-grounded-verification, PR #1: https://github.com/tranlocbtr99/factcheck/pull/1. Không nhập main.
+- PersonalGeminiClient dùng KnowledgeAssessment.requestBody, không tools/google_search.
+- Worker /assess (và alias /verify mới) đánh giá theo kiến thức, chỉ nhận DUNG/SAI; bỏ nguồn và search attribution kể cả provider tự xuất chúng.
+- FactCheckEngine không còn bắt buộc nguồn cho mode=model_knowledge. Yêu cầu response mode rõ ràng; route /assess tránh dùng nhầm máy chủ cũ còn Search.
+- UI và popup hiển thị Đúng/Sai, giải thích và nhãn chưa đối chiếu nguồn ngoài. Lịch sử cũ không bị xóa.
+- Giữ OCR 3 giây, chống trùng nội dung, hàng chờ mới nhất và xử lý quota của 3.1.1.
 
-## Việc đang làm / bước tiếp theo
-- Đợt kế tiếp: T01 trong TASKS.md — xác định và đồng bộ đúng mã nguồn của đợt sửa gần nhất trước khi sửa tiếp.
-- Chưa đủ bằng chứng xác nhận app hoàn thiện hoặc luồng kiểm chứng trực tuyến chạy thành công.
+## Kiểm tra / bàn giao
+- Môi trường exec/build cục bộ hiện unavailable. Chưa chạy test/build APK ký cho 3.2.0; không dùng số test 3.1.1 làm bằng chứng cho thay đổi mới.
+- Đã bổ sung test no-tools, binary verdict không cần nguồn, bỏ nguồn giả, lỗi output sai định dạng và từ chối backend cũ thiếu mode. CI cần chạy trên commit này.
+- APK ký gần nhất vẫn là 3.1.1; bản đó còn Search, không đáp ứng yêu cầu mới.
+- Chưa gọi Gemini thật hoặc kiểm tra trên iQOO. Không đưa khóa API/khóa ký lên git.
+- Bước tiếp: xem CI; khi môi trường build phục hồi, build 3.2.0 bằng khóa cũ, kiểm tra chữ ký, lưu APK và thử trực tiếp trên thiết bị.
 
-## Cách tiếp tục tiết kiệm hạn mức
-- Đọc STATUS.md và TASKS.md trước; chỉ đọc mã và diff liên quan đến mục đang làm.
-- “Báo tiến độ ngắn”: đọc hai file, kiểm tra nhanh HEAD; báo đã xong / kiểm tra / còn vướng / bước tiếp. Không tự build hay chạy toàn bộ test.
-- Nếu HEAD khác mốc đã ghi, chỉ xem tên file và diff từ mốc đó; cập nhật trạng thái có bằng chứng.
-- “Tiếp tục theo STATUS”: thực hiện mục ưu tiên đầu tiên chưa xong, gom lỗi liên quan thành một đợt.
-- Sau mỗi đợt: commit mã, ghi SHA, tệp liên quan, lệnh kiểm tra và kết quả, vướng mắc, bước tiếp theo. Phân biệt đã viết mã / đã build / đã kiểm thử / đã chạy thiết bị.
-- Chạy kiểm tra liên quan sau sửa; kiểm tra tổng thể và APK ký tại mốc bàn giao. Chỉ lặp lại khi có thay đổi, lỗi hoặc bằng chứng mới.
-- Giữ tài liệu ngắn; không lưu log dài hay toàn bộ hội thoại. Dẫn đường dẫn log/CI khi có.
+- CI đầu tiên (42055486668) lỗi trước khi build: setup-android mặc định yêu cầu package `tools` đã không còn. Đã đổi sang `platform-tools`, tách job backend và chạy lại CI. JavaScript syntax + hàm đánh giá model-only đã được kiểm tra trực tiếp trong runtime điều phối.
+
+## Bàn giao APK thử 3.2.0
+- CI https://github.com/tranlocbtr99/factcheck/actions/runs/42055980251 đã thành công cả backend và Android cho code không Search. Backend 21/21 test; cần xem báo cáo để lấy số Android chính xác.
+- GitHub chỉ có khóa debug, không có khóa release cũ. Debug variant được đổi thành vn.ltm.factcheck.preview, tên LTM FactCheck thử nghiệm để cài song song mà không gỡ/ghi đè app cũ. Release variant vẫn vn.ltm.factcheck và giữ cấu hình khóa ký cũ.
+- APK preview có dữ liệu/cài đặt riêng, cần nhập lại API key; không tự chuyển lịch sử hoặc khóa từ app cũ. Đây không phải APK nâng cấp cài đè.
+- CI mới sẽ đóng gói artifact LTMFactCheck-3.2.0-preview-apk chỉ chứa một APK. Chờ kết quả trước khi gửi file.

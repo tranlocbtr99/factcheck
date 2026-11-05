@@ -8,34 +8,44 @@ import com.example.data.repository.FactCheckRepository
 
 class FactCheckApplication : Application() {
 
+    lateinit var settings: com.example.data.settings.AppSettings
+        private set
+
     lateinit var repository: FactCheckRepository
         private set
 
     override fun onCreate() {
         super.onCreate()
+        settings = com.example.data.settings.AppSettings(this)
+        com.example.engine.FactCheckServiceManager.initialize(settings)
         repository = FactCheckRepository.getInstance(this)
         createNotificationChannel()
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
-                "LTM FactCheck Giám sát",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Thông báo hiển thị trạng thái của Trợ lý Kiểm chứng Màn hình"
-                setShowBadge(false)
-            }
+            val channel =
+                NotificationChannel(
+                        NOTIFICATION_CHANNEL_ID,
+                        "LTM FactCheck Giám sát",
+                        NotificationManager.IMPORTANCE_LOW,
+                    )
+                    .apply {
+                        description = "Thông báo hiển thị trạng thái của Trợ lý Kiểm chứng Màn hình"
+                        setShowBadge(false)
+                    }
 
-            val alertChannel = NotificationChannel(
-                ALERT_CHANNEL_ID,
-                "LTM FactCheck Cảnh báo",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Cảnh báo khi phát hiện thông tin có dấu hiệu sai lệch trên màn hình"
-                enableVibration(true)
-            }
+            val alertChannel =
+                NotificationChannel(
+                        ALERT_CHANNEL_ID,
+                        "LTM FactCheck Cảnh báo",
+                        NotificationManager.IMPORTANCE_HIGH,
+                    )
+                    .apply {
+                        description =
+                            "Cảnh báo khi phát hiện thông tin có dấu hiệu sai lệch trên màn hình"
+                        enableVibration(true)
+                    }
 
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)

@@ -11,7 +11,7 @@ enum class AssistantStatus(val displayNameVi: String) {
     IDLE("Chưa giám sát"),
     MONITORING("Đang giám sát"),
     PAUSED("Tạm dừng"),
-    ALERT("Cảnh báo thông tin")
+    ALERT("Cảnh báo thông tin"),
 }
 
 enum class AnalysisPhase {
@@ -21,10 +21,11 @@ enum class AnalysisPhase {
     EXTRACTING_CLAIMS,
     TRANSCRIBING_AUDIO,
     RETRIEVING_EVIDENCE,
-    FINISHED
+    FINISHED,
 }
 
 data class AssistantState(
+    val errorMessage: String? = null,
     val status: AssistantStatus = AssistantStatus.IDLE,
     val analysisPhase: AnalysisPhase = AnalysisPhase.IDLE,
     val isOverlayActive: Boolean = false,
@@ -39,5 +40,5 @@ data class AssistantState(
     val lastCheckTimestamp: Long = 0L,
     val framesCapturedCount: Long = 0L,
     val alertMessage: String? = null,
-    val currentAppDetected: String = "Thiết bị Android"
+    val currentAppDetected: String = "Thiết bị Android",
 )

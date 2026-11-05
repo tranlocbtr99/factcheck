@@ -1,1565 +1,860 @@
 package com.example.service
 
-import android.annotation.SuppressLint
-import android.app.Notification
-import android.app.PendingIntent
-import android.app.Service
-import android.content.Context
+import android.app.*
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.Point
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
-import android.net.Uri
-import android.os.Build
-import android.os.Handler
-import android.os.HandlerThread
-import android.os.IBinder
-import android.os.Looper
+import android.os.*
 import android.provider.Settings
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
-import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
-import android.widget.Toast
+import android.view.*
+import android.widget.*
 import androidx.core.app.NotificationCompat
 import com.example.FactCheckApplication
 import com.example.MainActivity
 import com.example.R
-import com.example.data.repository.FactCheckRepository
-import com.example.engine.AudioSpeechEngine
-import com.example.engine.ClaimExtractor
-import com.example.engine.FactCheckEngine
-import com.example.engine.FactCheckServiceManager
-import com.example.engine.OcrProcessor
-import com.example.engine.ScreenFrameDetector
-import com.example.model.AnalysisPhase
-import com.example.model.AssistantStatus
-import com.example.model.FactCheckRecord
-import com.example.model.FactCheckVerdict
-import com.example.model.PrimaryVerdict
-import com.example.model.ReferenceSource
+import com.example.engine.*
+import com.example.model.*
 import com.example.ui.TransparentProjectionActivity
-import java.util.UUID
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.nio.ByteBuffer
-import kotlin.math.abs
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
+/** One owner per capture session. Cancelling a session invalidates every in-flight result. */
 class FloatingAssistantService : Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val pipeline = Mutex()
+    private val frameLock = Any()
+    private val ocr = OcrProcessor()
+    private val sampling = Mutex()
+    private val engine
+        get() = (application as FactCheckApplication).repository.engine
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private lateinit var windowManager: WindowManager
-    private lateinit var mediaProjectionManager: MediaProjectionManager
+    private val repository
+        get() = (application as FactCheckApplication).repository
 
-    // UI Overlay Views
-    private var floatingRootView: FrameLayout? = null
-    private var floatingBubbleView: FrameLayout? = null
-    private var quickPanelLayout: LinearLayout? = null
-    private var floatingResultCardView: LinearLayout? = null
-    private var floatingChatCardView: LinearLayout? = null
-    private var statusDotView: View? = null
-    private var alertBadgeView: TextView? = null
-
-    // Window Layout Params
-    private lateinit var bubbleLayoutParams: WindowManager.LayoutParams
-
-    // MediaProjection & Capture
-    private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var imageReader: ImageReader? = null
+    private var projection: MediaProjection? = null
+    private var display: VirtualDisplay? = null
+    private var reader: ImageReader? = null
     private var captureThread: HandlerThread? = null
-    private var captureHandler: Handler? = null
-    private var isProjectionPaused: Boolean = false
-    private var latestScreenBitmap: Bitmap? = null
+    private var frame: Bitmap? = null
+    @Volatile private var lastFrameAt = 0L
+    @Volatile private var captureNow = false
+    private var analysisJob: Job? = null
+    private var instantJob: Job? = null
+    private var audioJob: Job? = null
+    private var session = 0L
+    private var analysisEpoch = 0L
+    private var paused = false
+    private var lastText = ""
+    private var lastScreenResult: FactCheckRecord? = null
+    private var latestScreenText = ""
+    private var queuedText = ""
+    private var checkingText = ""
+    private var retryAt = 0L
+    private var requestFailures = 0
+    private var verificationJob: Job? = null
+    private var screenQueue: Channel<ScreenSnapshot>? = null
 
-    // Audio Analysis & Speech-To-Text
-    private var audioSpeechEngine: AudioSpeechEngine? = null
+    private data class ScreenSnapshot(
+        val text: String,
+        val raw: String,
+        val session: Long,
+        val epoch: Long,
+        val force: Boolean,
+    )
 
-    // Analysis Pipeline
-    private val frameDetector = ScreenFrameDetector(0.05f)
-    private val ocrProcessor = OcrProcessor()
-    private val claimExtractor = ClaimExtractor()
-    private val factCheckEngine = FactCheckEngine()
-    private lateinit var repository: FactCheckRepository
+    private var audio: AudioCaptureEngine? = null
+    private var microphone = false
+    private var audioSerial = 0L
+    private lateinit var wm: WindowManager
+    private var bubble: TextView? = null
+    private var panel: LinearLayout? = null
+    private var params: WindowManager.LayoutParams? = null
 
-    // Touch & Drag state for bubble
-    private var initialX: Int = 0
-    private var initialY: Int = 0
-    private var initialTouchX: Float = 0f
-    private var initialTouchY: Float = 0f
-    private var isDragging: Boolean = false
-    private val clickThreshold = 12
-
-    // Debounce & deduplication
-    private var lastAnalyzedClaim: String? = null
-    private var lastAnalysisTimestamp: Long = 0L
+    override fun onBind(intent: Intent?) = null
 
     override fun onCreate() {
         super.onCreate()
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        repository = FactCheckRepository.getInstance(this)
-
-        initAudioSpeechEngine()
-
-        // Bắt đầu Foreground Service an toàn (SpecialUse trước khi có MediaProjection)
-        safeStartForegroundNotification(false)
-
-        if (canDrawOverlays()) {
-            setupFloatingWindow()
-            FactCheckServiceManager.setOverlayActive(true)
-        } else {
-            FactCheckServiceManager.setOverlayActive(false)
-        }
-
-        observeUserEvents()
-    }
-
-    private fun initAudioSpeechEngine() {
-        audioSpeechEngine = AudioSpeechEngine(
-            context = this,
-            onSpeechRecognized = { transcribedText, isFinal ->
-                serviceScope.launch(Dispatchers.Main) {
-                    FactCheckServiceManager.updateLiveAudio(transcribedText)
-                    if (isFinal && transcribedText.length >= 10) {
-                        processSpokenText(transcribedText)
-                    }
-                }
-            },
-            onErrorOccurred = { errorMsg ->
-                serviceScope.launch(Dispatchers.Main) {
-                    Log("Speech: $errorMsg")
+        wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        foreground(false)
+        showBubble()
+        scope.launch {
+            FactCheckServiceManager.userEvents.collect { event ->
+                when (event) {
+                    FactCheckServiceManager.UserActionEvent.RequestPauseMonitoring -> pause()
+                    FactCheckServiceManager.UserActionEvent.RequestResumeMonitoring -> resume()
+                    FactCheckServiceManager.UserActionEvent.RequestStopMonitoring -> stopSession()
+                    FactCheckServiceManager.UserActionEvent.RequestInstantScreenCheck -> instant()
+                    FactCheckServiceManager.UserActionEvent.RequestToggleAudio -> toggleAudio(false)
+                    FactCheckServiceManager.UserActionEvent.DismissAlert ->
+                        FactCheckServiceManager.clearAlert()
+                    else -> Unit
                 }
             }
-        )
-    }
-
-    private fun Log(msg: String) {
-        android.util.Log.d("LTM_FactCheck", msg)
-    }
-
-    private fun canDrawOverlays(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(this)
-        } else {
-            true
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START_PROJECTION -> {
-                val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
-                val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
-                val triggerInstantCheck = intent.getBooleanExtra(EXTRA_TRIGGER_INSTANT_CHECK, false)
-                if (resultCode != 0 && resultData != null) {
-                    initMediaProjection(resultCode, resultData, triggerInstantCheck)
-                }
-            }
-            ACTION_PAUSE -> pauseMonitoring()
-            ACTION_RESUME -> resumeMonitoring()
-            ACTION_STOP -> stopMonitoring()
-            ACTION_INSTANT_CHECK -> executeInstantScreenCheck()
-            ACTION_TOGGLE_AUDIO -> toggleAudioListening()
-            ACTION_SHOW_RESULT -> {
-                val state = FactCheckServiceManager.assistantState.value
-                val record = state.latestRecord
-                if (record != null) {
-                    showOnScreenResultCard(record)
-                } else {
-                    executeInstantScreenCheck()
-                }
-            }
-            ACTION_DISMISS_ALERT -> {
-                FactCheckServiceManager.clearAlert()
-                updateBubbleUi()
-            }
-        }
-        return START_STICKY
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    private fun safeStartForegroundNotification(isProjectionActive: Boolean) {
-        val openAppIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val pauseIntent = PendingIntent.getService(
-            this,
-            1,
-            Intent(this, FloatingAssistantService::class.java).apply { action = ACTION_PAUSE },
-            PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val stopIntent = PendingIntent.getService(
-            this,
-            2,
-            Intent(this, FloatingAssistantService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val contentText = if (isProjectionActive) {
-            "Đang đọc màn hình & nhận diện âm thanh video thời gian thực"
-        } else {
-            "Trợ lý nổi sẵn sàng. Nhấn để bắt đầu đọc màn hình"
-        }
-
-        val notification = NotificationCompat.Builder(this, FactCheckApplication.NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("LTM FactCheck AI (Đang giám sát)")
-            .setContentText(contentText)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentIntent(openAppIntent)
-            .setOngoing(true)
-            .addAction(android.R.drawable.ic_media_pause, "Tạm dừng", pauseIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Dừng", stopIntent)
-            .build()
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                if (isProjectionActive) {
-                    var fgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        fgsType = fgsType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    }
-                    startForeground(FactCheckApplication.FOREGROUND_NOTIFICATION_ID, notification, fgsType)
-                } else {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        startForeground(FactCheckApplication.FOREGROUND_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-                    } else {
-                        startForeground(FactCheckApplication.FOREGROUND_NOTIFICATION_ID, notification)
-                    }
-                }
-            } else {
-                startForeground(FactCheckApplication.FOREGROUND_NOTIFICATION_ID, notification)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    @SuppressLint("ClickableViewAccessibility")
-    private fun setupFloatingWindow() {
-        if (!canDrawOverlays()) return
-
-        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
-        }
-
-        val display = windowManager.defaultDisplay
-        val size = Point()
-        display.getSize(size)
-        val screenWidth = size.x
-
-        val density = resources.displayMetrics.density
-        val btnSizeDp = FactCheckServiceManager.settings.value.floatingButtonSizeDp
-        val btnSizePx = (btnSizeDp * density).toInt()
-
-        bubbleLayoutParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            layoutType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = screenWidth - btnSizePx - (16 * density).toInt()
-            y = (200 * density).toInt()
-        }
-
-        val root = FrameLayout(this)
-        floatingRootView = root
-
-        val bubble = FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(btnSizePx, btnSizePx)
-            background = createLiquidGlassBubbleBackground()
-            elevation = 12f * density
-        }
-
-        val iconView = ImageView(this).apply {
-            val pad = (btnSizePx * 0.22f).toInt()
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            setPadding(pad, pad, pad, pad)
-            setImageResource(R.drawable.ic_factcheck_logo)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-        }
-        bubble.addView(iconView)
-
-        val dot = View(this).apply {
-            val dotSize = (14 * density).toInt()
-            val params = FrameLayout.LayoutParams(dotSize, dotSize).apply {
-                gravity = Gravity.BOTTOM or Gravity.END
-                setMargins(0, 0, (4 * density).toInt(), (4 * density).toInt())
-            }
-            layoutParams = params
-            background = createDotDrawable(Color.GRAY)
-        }
-        statusDotView = dot
-        bubble.addView(dot)
-
-        val alertBadge = TextView(this).apply {
-            val badgeSize = (20 * density).toInt()
-            val params = FrameLayout.LayoutParams(badgeSize, badgeSize).apply {
-                gravity = Gravity.TOP or Gravity.END
-                setMargins(0, (2 * density).toInt(), (2 * density).toInt(), 0)
-            }
-            layoutParams = params
-            setTextColor(Color.WHITE)
-            textSize = 10f
-            gravity = Gravity.CENTER
-            visibility = View.GONE
-            background = createDotDrawable(Color.parseColor("#EF4444"))
-        }
-        alertBadgeView = alertBadge
-        bubble.addView(alertBadge)
-
-        floatingBubbleView = bubble
-        root.addView(bubble)
-
-        setupQuickPanel(root, density)
-        setupOnScreenResultCard(root, density, screenWidth)
-        setupOnScreenChatCard(root, density, screenWidth)
-
-        bubble.setOnTouchListener { _, event ->
-            handleBubbleTouch(event, screenWidth, btnSizePx)
-        }
-
-        try {
-            windowManager.addView(root, bubbleLayoutParams)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
-        updateBubbleUi()
-    }
-
-    private fun handleBubbleTouch(event: MotionEvent, screenWidth: Int, btnSizePx: Int): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
-                initialX = bubbleLayoutParams.x
-                initialY = bubbleLayoutParams.y
-                initialTouchX = event.rawX
-                initialTouchY = event.rawY
-                isDragging = false
-                return true
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val dx = (event.rawX - initialTouchX).toInt()
-                val dy = (event.rawY - initialTouchY).toInt()
-
-                if (abs(dx) > clickThreshold || abs(dy) > clickThreshold) {
-                    isDragging = true
-                    bubbleLayoutParams.x = initialX + dx
-                    bubbleLayoutParams.y = initialY + dy
-                    try {
-                        windowManager.updateViewLayout(floatingRootView, bubbleLayoutParams)
-                    } catch (_: Exception) {}
-                }
-                return true
-            }
-            MotionEvent.ACTION_UP -> {
-                if (!isDragging) {
-                    val state = FactCheckServiceManager.assistantState.value
-                    if (floatingResultCardView?.visibility == View.VISIBLE) {
-                        floatingResultCardView?.visibility = View.GONE
-                    } else if (state.latestRecord != null && (state.status == AssistantStatus.ALERT || state.latestRecord?.isAlerted == true)) {
-                        state.latestRecord?.let { showOnScreenResultCard(it) }
-                    } else {
-                        toggleQuickPanel()
-                    }
-                } else {
-                    val midPoint = screenWidth / 2
-                    val targetX = if (bubbleLayoutParams.x + (btnSizePx / 2) < midPoint) {
-                        16
-                    } else {
-                        screenWidth - btnSizePx - 16
-                    }
-                    animateSnapToEdge(targetX)
-                }
-                return true
-            }
-        }
-        return false
-    }
-
-    private fun animateSnapToEdge(targetX: Int) {
-        val startX = bubbleLayoutParams.x
-        val handler = Handler(Looper.getMainLooper())
-        var step = 0
-        val totalSteps = 10
-        val runnable = object : Runnable {
-            override fun run() {
-                step++
-                val fraction = step.toFloat() / totalSteps
-                bubbleLayoutParams.x = (startX + (targetX - startX) * fraction).toInt()
-                try {
-                    windowManager.updateViewLayout(floatingRootView, bubbleLayoutParams)
-                } catch (_: Exception) {}
-                if (step < totalSteps) {
-                    handler.postDelayed(this, 12)
-                }
-            }
-        }
-        handler.post(runnable)
-    }
-
-    private fun setupQuickPanel(root: FrameLayout, density: Float) {
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = (14 * density).toInt()
-            setPadding(pad, pad, pad, pad)
-            background = createLiquidGlassPanelBackground()
-            visibility = View.GONE
-            elevation = 16f * density
-
-            val params = FrameLayout.LayoutParams(
-                (280 * density).toInt(),
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                setMargins(0, (68 * density).toInt(), 0, 0)
-            }
-            layoutParams = params
-        }
-
-        val header = TextView(this).apply {
-            text = "LTM FactCheck AI (Màn hình & Video)"
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            params.setMargins(0, 0, 0, (8 * density).toInt())
-            layoutParams = params
-        }
-        panel.addView(header)
-
-        addPanelItem(panel, "🔍 Đọc & Kiểm chứng ngay màn hình", density) {
-            toggleQuickPanel()
-            executeInstantScreenCheck()
-        }
-
-        val isAudioOn = FactCheckServiceManager.assistantState.value.isAudioTranscriptionActive
-        val audioTitle = if (isAudioOn) "🎙️ Tắt nhận diện âm thanh video" else "🎙️ Bật nhận diện âm thanh video (STT)"
-        addPanelItem(panel, audioTitle, density) {
-            toggleQuickPanel()
-            toggleAudioListening()
-        }
-
-        addPanelItem(panel, "📋 Xem kết quả gần nhất tại đây", density) {
-            toggleQuickPanel()
-            val record = FactCheckServiceManager.assistantState.value.latestRecord
-            if (record != null) {
-                showOnScreenResultCard(record)
-            } else {
-                executeInstantScreenCheck()
-            }
-        }
-
-        addPanelItem(panel, "💬 Hỏi AI trực tiếp trên màn hình", density) {
-            toggleQuickPanel()
-            showOnScreenChatCard()
-        }
-
-        addPanelItem(panel, "⏯️ Tạm dừng / Tiếp tục giám sát", density) {
-            toggleQuickPanel()
-            if (isProjectionPaused) resumeMonitoring() else pauseMonitoring()
-        }
-
-        addPanelItem(panel, "📱 Mở ứng dụng LTM FactCheck", density) {
-            toggleQuickPanel()
-            openMainActivity()
-        }
-
-        addPanelItem(panel, "⏹️ Dừng giám sát & Đóng nút nổi", density) {
-            toggleQuickPanel()
-            stopMonitoring()
-            stopSelf()
-        }
-
-        quickPanelLayout = panel
-        root.addView(panel)
-    }
-
-    private fun toggleAudioListening() {
-        val currentlyActive = FactCheckServiceManager.assistantState.value.isAudioTranscriptionActive
-        if (currentlyActive) {
-            audioSpeechEngine?.stopListening()
-            FactCheckServiceManager.setAudioActive(false)
-            Toast.makeText(this, "Đã tắt nhận diện âm thanh video", Toast.LENGTH_SHORT).show()
-        } else {
-            audioSpeechEngine?.startListening()
-            FactCheckServiceManager.setAudioActive(true)
-            Toast.makeText(this, "Đang lắng nghe âm thanh video (TikTok, YouTube, Facebook)...", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun processSpokenText(spokenText: String) {
-        serviceScope.launch {
-            val claims = claimExtractor.extractClaims(spokenText)
-            if (claims.isNotEmpty()) {
-                val topClaim = claims.first()
-                if (topClaim.normalizedClaim != lastAnalyzedClaim) {
-                    lastAnalyzedClaim = topClaim.normalizedClaim
-                    lastAnalysisTimestamp = System.currentTimeMillis()
-
-                    val record = factCheckEngine.verifyClaim(
-                        extractedClaim = topClaim.normalizedClaim,
-                        sourceApp = "Âm thanh video (${topClaim.detectedAppName})",
-                        rawScreenText = "Nhận diện từ lời nói video: \"$spokenText\""
+                val data = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
+                if (data != null)
+                    startProjection(
+                        intent.getIntExtra(EXTRA_RESULT_CODE, 0),
+                        data,
+                        intent.getBooleanExtra(EXTRA_TRIGGER_INSTANT_CHECK, false),
                     )
-
-                    repository.saveRecord(record)
-                    FactCheckServiceManager.onNewFactCheckRecord(record)
-                    updateBubbleUi()
-
-                    // Hiển thị trực tiếp kết quả nếu phát hiện sai lệch hoặc có yêu cầu
-                    showOnScreenResultCard(record)
-                    if (record.isAlerted) {
-                        triggerAlertNotification(record)
-                    }
-                }
             }
+            ACTION_INSTANT_CHECK -> instant()
+            ACTION_TOGGLE_AUDIO -> toggleAudio(false)
+            ACTION_TOGGLE_MICROPHONE -> toggleAudio(true)
+            ACTION_PAUSE -> pause()
+            ACTION_RESUME -> resume()
+            ACTION_STOP -> stopSession()
+            ACTION_SHOW_RESULT -> openApp()
+            ACTION_DISMISS_ALERT -> FactCheckServiceManager.clearAlert()
         }
+        return START_NOT_STICKY
     }
 
-    private fun setupOnScreenResultCard(root: FrameLayout, density: Float, screenWidth: Int) {
-        val cardWidth = (screenWidth * 0.94f).toInt().coerceAtMost((400 * density).toInt())
-
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = (16 * density).toInt()
-            setPadding(pad, pad, pad, pad)
-            background = createLiquidGlassPanelBackground()
-            visibility = View.GONE
-            elevation = 20f * density
-
-            val params = FrameLayout.LayoutParams(
-                cardWidth,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                setMargins((10 * density).toInt(), (72 * density).toInt(), 0, 0)
-            }
-            layoutParams = params
-        }
-
-        floatingResultCardView = card
-        root.addView(card)
-    }
-
-    /**
-     * Hiển thị kết quả kiểm chứng trực tiếp trên màn hình ứng dụng đang xem
-     * Kèm bằng chứng thực chất đã đọc được từ màn hình và âm thanh video
-     */
-    private fun showOnScreenResultCard(record: FactCheckRecord) {
-        val card = floatingResultCardView ?: return
-        card.removeAllViews()
-        val density = resources.displayMetrics.density
-
-        // 1. Header Row: Primary Verdict Badge + Nút đóng
-        val headerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            params.setMargins(0, 0, 0, (10 * density).toInt())
-            layoutParams = params
-        }
-
-        val verdictBadge = TextView(this).apply {
-            val primary = record.verdict.primaryVerdict
-            text = "● ${primary.titleVi}: ${record.verdict.titleVi.uppercase()}"
-            textSize = 13f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(Color.WHITE)
-            val padH = (12 * density).toInt()
-            val padV = (5 * density).toInt()
-            setPadding(padH, padV, padH, padV)
-
-            val badgeColor = when (primary) {
-                PrimaryVerdict.DUNG -> Color.parseColor("#10B981")
-                PrimaryVerdict.SAI -> Color.parseColor("#EF4444")
-                PrimaryVerdict.CHUA_DU_CO_SO -> Color.parseColor("#A855F7")
-            }
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 20f * density
-                setColor(badgeColor)
-            }
-        }
-        headerRow.addView(verdictBadge)
-
-        val spacer = View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) }
-        headerRow.addView(spacer)
-
-        val closeBtn = TextView(this).apply {
-            text = "✕"
-            textSize = 18f
-            setTextColor(Color.parseColor("#94A3B8"))
-            setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
-            isClickable = true
-            setOnClickListener { card.visibility = View.GONE }
-        }
-        headerRow.addView(closeBtn)
-        card.addView(headerRow)
-
-        val scroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                (300 * density).toInt()
+    private fun foreground(capturing: Boolean) {
+        val open =
+            PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-        }
-        val contentLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val stop =
+            PendingIntent.getService(
+                this,
+                1,
+                Intent(this, javaClass).setAction(ACTION_STOP),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+        val notification =
+            NotificationCompat.Builder(this, FactCheckApplication.NOTIFICATION_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle("LTM FactCheck")
+                .setContentText(
+                    if (capturing) "Đang chia sẻ màn hình • Chạm để quản lý"
+                    else "Trợ lý nổi sẵn sàng"
+                )
+                .setContentIntent(open)
+                .setOngoing(true)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Kết thúc", stop)
+                .build()
+        if (Build.VERSION.SDK_INT >= 29) {
+            var type =
+                if (capturing) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                else if (Build.VERSION.SDK_INT >= 34)
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                else 0
+            if (microphone) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            startForeground(FactCheckApplication.FOREGROUND_NOTIFICATION_ID, notification, type)
+        } else startForeground(FactCheckApplication.FOREGROUND_NOTIFICATION_ID, notification)
+    }
 
-        // 2. Chứng thực nguồn thu thập (Màn hình OCR hay Âm thanh Video)
-        val sourceMeta = TextView(this).apply {
-            val frames = FactCheckServiceManager.assistantState.value.framesCapturedCount
-            text = "📍 ${record.sourceApp} • Khung hình quét: #$frames"
-            textSize = 11f
-            setTextColor(Color.parseColor("#38BDF8"))
-            setTypeface(null, android.graphics.Typeface.BOLD)
-        }
-        contentLayout.addView(sourceMeta)
-
-        val claimBody = TextView(this).apply {
-            text = "\"${record.normalizedClaim}\""
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            params.setMargins(0, (2 * density).toInt(), 0, (8 * density).toInt())
-            layoutParams = params
-        }
-        contentLayout.addView(claimBody)
-
-        // 3. Phân tích cụ thể & Bằng chứng thực chất
-        val explanationTv = TextView(this).apply {
-            text = "${record.shortExplanation}\n\n${record.detailedExplanation}"
-            textSize = 12.5f
-            setTextColor(Color.parseColor("#E2E8F0"))
-            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            params.setMargins(0, 0, 0, (8 * density).toInt())
-            layoutParams = params
-        }
-        contentLayout.addView(explanationTv)
-
-        if (record.evidence.isNotBlank()) {
-            val evidenceBox = TextView(this).apply {
-                text = "✓ Bằng chứng đối chiếu: ${record.evidence}"
-                textSize = 11.5f
-                setTextColor(Color.parseColor("#BBF7D0"))
-                setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
-                background = GradientDrawable().apply {
-                    cornerRadius = 8f * density
-                    setColor(Color.parseColor("#2614532D"))
-                }
-                val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                params.setMargins(0, 0, 0, (8 * density).toInt())
-                layoutParams = params
-            }
-            contentLayout.addView(evidenceBox)
-        }
-
-        // 4. Bằng chứng thực tế đọc được từ Màn hình / Âm thanh
-        if (record.rawScreenText.isNotBlank()) {
-            val rawSnippetBox = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
-                background = GradientDrawable().apply {
-                    cornerRadius = 8f * density
-                    setColor(Color.parseColor("#1A38BDF8"))
-                    setStroke(1, Color.parseColor("#3338BDF8"))
-                }
-                val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                params.setMargins(0, 0, 0, (8 * density).toInt())
-                layoutParams = params
-            }
-
-            val snippetHeader = TextView(this).apply {
-                text = "DỮ LIỆU ĐỌC ĐƯỢC TỪ MÀN HÌNH:"
-                textSize = 10f
-                setTextColor(Color.parseColor("#38BDF8"))
-                setTypeface(null, android.graphics.Typeface.BOLD)
-            }
-            rawSnippetBox.addView(snippetHeader)
-
-            val snippetText = TextView(this).apply {
-                text = record.rawScreenText.take(160) + if (record.rawScreenText.length > 160) "..." else ""
-                textSize = 11f
-                setTextColor(Color.parseColor("#94A3B8"))
-            }
-            rawSnippetBox.addView(snippetText)
-            contentLayout.addView(rawSnippetBox)
-        }
-
-        // 5. Danh sách Nguồn kiểm chứng mở được trực tiếp
-        if (record.references.isNotEmpty()) {
-            val refTitle = TextView(this).apply {
-                text = "NGUỒN THAM KHẢO XÁC MINH:"
-                textSize = 11f
-                setTextColor(Color.parseColor("#38BDF8"))
-                setTypeface(null, android.graphics.Typeface.BOLD)
-            }
-            contentLayout.addView(refTitle)
-
-            record.references.forEach { ref ->
-                val refItem = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
-                    background = GradientDrawable().apply {
-                        cornerRadius = 8f * density
-                        setColor(Color.parseColor("#331E293B"))
-                        setStroke(1, Color.parseColor("#4D38BDF8"))
-                    }
-                    val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                    params.setMargins(0, (4 * density).toInt(), 0, (6 * density).toInt())
-                    layoutParams = params
-                }
-
-                val refHeader = TextView(this).apply {
-                    text = "🌐 ${ref.publisher} (${ref.publishDate})"
-                    textSize = 11.5f
-                    setTypeface(null, android.graphics.Typeface.BOLD)
-                    setTextColor(Color.parseColor("#38BDF8"))
-                }
-                refItem.addView(refHeader)
-
-                val refSnippet = TextView(this).apply {
-                    text = "\"${ref.supportingSnippet}\""
-                    textSize = 11f
-                    setTextColor(Color.parseColor("#CBD5E1"))
-                }
-                refItem.addView(refSnippet)
-
-                val openLinkBtn = TextView(this).apply {
-                    text = "↗ Mở nguồn kiểm chứng gốc"
-                    textSize = 11f
-                    setTypeface(null, android.graphics.Typeface.BOLD)
-                    setTextColor(Color.parseColor("#38BDF8"))
-                    isClickable = true
-                    setOnClickListener {
-                        try {
-                            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(ref.url)).apply {
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                            }
-                            startActivity(browserIntent)
-                        } catch (e: Exception) {
-                            Toast.makeText(this@FloatingAssistantService, "Không thể mở liên kết: ${ref.url}", Toast.LENGTH_SHORT).show()
+    private fun startProjection(code: Int, data: Intent, instant: Boolean) {
+        releaseSession()
+        try {
+            foreground(true) // Must precede getMediaProjection on recent Android releases.
+            val p =
+                (getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager)
+                    .getMediaProjection(code, data)
+                    ?: throw FactCheckException("Không nhận được quyền chia sẻ màn hình.")
+            projection = p
+            val id = session
+            p.registerCallback(
+                object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        if (id == session) {
+                            releaseSession()
+                            foreground(false)
+                            status(AssistantStatus.IDLE)
                         }
                     }
-                }
-                refItem.addView(openLinkBtn)
-                contentLayout.addView(refItem)
-            }
-        }
 
-        scroll.addView(contentLayout)
-        card.addView(scroll)
-
-        // Bottom Actions
-        val actionsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            params.setMargins(0, (8 * density).toInt(), 0, 0)
-            layoutParams = params
-        }
-
-        val askAiBtn = TextView(this).apply {
-            text = "💬 Hỏi AI"
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = 8f * density
-                setColor(Color.parseColor("#4D38BDF8"))
-            }
-            isClickable = true
-            setOnClickListener {
-                card.visibility = View.GONE
-                showOnScreenChatCard()
-            }
-            val params = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            params.setMargins(0, 0, (6 * density).toInt(), 0)
-            layoutParams = params
-        }
-        actionsRow.addView(askAiBtn)
-
-        val fullAppBtn = TextView(this).apply {
-            text = "📱 Xem trong App"
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = 8f * density
-                setColor(Color.parseColor("#331E293B"))
-            }
-            isClickable = true
-            setOnClickListener {
-                card.visibility = View.GONE
-                openResultDetail(record.id)
-            }
-            val params = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            layoutParams = params
-        }
-        actionsRow.addView(fullAppBtn)
-
-        card.addView(actionsRow)
-        card.visibility = View.VISIBLE
-    }
-
-    private fun setupOnScreenChatCard(root: FrameLayout, density: Float, screenWidth: Int) {
-        val cardWidth = (screenWidth * 0.94f).toInt().coerceAtMost((400 * density).toInt())
-
-        val chatCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = (14 * density).toInt()
-            setPadding(pad, pad, pad, pad)
-            background = createLiquidGlassPanelBackground()
-            visibility = View.GONE
-            elevation = 22f * density
-
-            val params = FrameLayout.LayoutParams(
-                cardWidth,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                setMargins((10 * density).toInt(), (72 * density).toInt(), 0, 0)
-            }
-            layoutParams = params
-        }
-
-        floatingChatCardView = chatCard
-        root.addView(chatCard)
-    }
-
-    private fun showOnScreenChatCard() {
-        val chatCard = floatingChatCardView ?: return
-        chatCard.removeAllViews()
-        val density = resources.displayMetrics.density
-
-        val headerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            params.setMargins(0, 0, 0, (8 * density).toInt())
-            layoutParams = params
-        }
-
-        val title = TextView(this).apply {
-            text = "💬 Hỏi AI về màn hình đang xem"
-            textSize = 14f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(Color.parseColor("#38BDF8"))
-        }
-        headerRow.addView(title)
-
-        val spacer = View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) }
-        headerRow.addView(spacer)
-
-        val closeBtn = TextView(this).apply {
-            text = "✕"
-            textSize = 18f
-            setTextColor(Color.parseColor("#94A3B8"))
-            setPadding((6 * density).toInt(), (2 * density).toInt(), (6 * density).toInt(), (2 * density).toInt())
-            isClickable = true
-            setOnClickListener { chatCard.visibility = View.GONE }
-        }
-        headerRow.addView(closeBtn)
-        chatCard.addView(headerRow)
-
-        val responseTv = TextView(this).apply {
-            val state = FactCheckServiceManager.assistantState.value
-            val initialAnswer = if (state.latestRecord != null) {
-                "Nội dung đang xem: \"${state.latestRecord?.normalizedClaim}\"\n\nKết luận: [${state.latestRecord?.verdict?.primaryVerdict?.titleVi}] - ${state.latestRecord?.shortExplanation}"
-            } else {
-                "Sẵn sàng giải đáp! Bạn có thể chọn câu hỏi nhanh bên dưới hoặc nhập câu hỏi."
-            }
-            text = initialAnswer
-            textSize = 12f
-            setTextColor(Color.parseColor("#E2E8F0"))
-            setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = 8f * density
-                setColor(Color.parseColor("#331E293B"))
-            }
-            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            params.setMargins(0, 0, 0, (8 * density).toInt())
-            layoutParams = params
-        }
-        chatCard.addView(responseTv)
-
-        val quickQuestions = listOf(
-            "Thông tin này đúng hay sai?",
-            "Nguồn gốc từ đâu?",
-            "Có bằng chứng phản bác không?"
-        )
-        val qContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            params.setMargins(0, 0, 0, (8 * density).toInt())
-            layoutParams = params
-        }
-        quickQuestions.forEach { q ->
-            val qBtn = TextView(this).apply {
-                text = q
-                textSize = 10f
-                setTextColor(Color.parseColor("#38BDF8"))
-                setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
-                background = GradientDrawable().apply {
-                    cornerRadius = 12f * density
-                    setColor(Color.parseColor("#2638BDF8"))
-                    setStroke(1, Color.parseColor("#6638BDF8"))
-                }
-                isClickable = true
-                setOnClickListener {
-                    handleQuickQuestion(q, responseTv)
-                }
-                val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                params.setMargins(0, 0, (4 * density).toInt(), 0)
-                layoutParams = params
-            }
-            qContainer.addView(qBtn)
-        }
-        chatCard.addView(qContainer)
-
-        chatCard.visibility = View.VISIBLE
-    }
-
-    private fun handleQuickQuestion(question: String, responseTv: TextView) {
-        val state = FactCheckServiceManager.assistantState.value
-        val record = state.latestRecord
-
-        val answer = when {
-            question.contains("đúng hay sai") -> {
-                if (record != null) {
-                    "Kết luận: [${record.verdict.primaryVerdict.titleVi}] - ${record.verdict.titleVi}\n\n${record.shortExplanation}"
-                } else {
-                    "Chưa quét được nội dung cụ thể trên màn hình. Hãy bấm 'Kiểm chứng ngay' để AI phân tích."
-                }
-            }
-            question.contains("Nguồn") -> {
-                if (record != null && record.references.isNotEmpty()) {
-                    val ref = record.references.first()
-                    "Dữ liệu kiểm chứng từ ${ref.publisher} (${ref.publishDate}): \"${ref.supportingSnippet}\""
-                } else {
-                    "Theo tiêu chuẩn xác minh, các cơ quan chuyên môn như Bộ Y Tế, WHO, TTXVN là nguồn kiểm chứng chuẩn."
-                }
-            }
-            question.contains("phản bác") -> {
-                if (record != null && record.counterEvidence.isNotBlank()) {
-                    "Bằng chứng phản bác: ${record.counterEvidence}"
-                } else {
-                    "Không có tài liệu khoa học chính thống nào hỗ trợ cho luận điểm sai lệch này."
-                }
-            }
-            else -> "Đang phân tích..."
-        }
-        responseTv.text = answer
-    }
-
-    private fun addPanelItem(parent: LinearLayout, title: String, density: Float, onClick: () -> Unit) {
-        val tv = TextView(this).apply {
-            text = title
-            textSize = 13f
-            setTextColor(Color.parseColor("#E2E8F0"))
-            val padV = (10 * density).toInt()
-            val padH = (12 * density).toInt()
-            setPadding(padH, padV, padH, padV)
-            background = createPanelItemRipple()
-            isClickable = true
-            setOnClickListener { onClick() }
-            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            params.setMargins(0, (3 * density).toInt(), 0, (3 * density).toInt())
-            layoutParams = params
-        }
-        parent.addView(tv)
-    }
-
-    private fun toggleQuickPanel() {
-        val panel = quickPanelLayout ?: return
-        if (panel.visibility == View.VISIBLE) {
-            panel.visibility = View.GONE
-        } else {
-            floatingResultCardView?.visibility = View.GONE
-            floatingChatCardView?.visibility = View.GONE
-            panel.visibility = View.VISIBLE
-        }
-    }
-
-    private fun createLiquidGlassBubbleBackground(): GradientDrawable {
-        return GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#E60F172A"))
-            setStroke(3, Color.parseColor("#8038BDF8"))
-        }
-    }
-
-    private fun createLiquidGlassPanelBackground(): GradientDrawable {
-        val density = resources.displayMetrics.density
-        return GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = 20f * density
-            setColor(Color.parseColor("#F20F172A"))
-            setStroke(2, Color.parseColor("#4D38BDF8"))
-        }
-    }
-
-    private fun createPanelItemRipple(): GradientDrawable {
-        val density = resources.displayMetrics.density
-        return GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = 10f * density
-            setColor(Color.parseColor("#331E293B"))
-        }
-    }
-
-    private fun createDotDrawable(color: Int): GradientDrawable {
-        return GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(color)
-            setStroke(2, Color.WHITE)
-        }
-    }
-
-    private fun updateBubbleUi() {
-        val state = FactCheckServiceManager.assistantState.value
-        val color = when (state.status) {
-            AssistantStatus.IDLE -> Color.GRAY
-            AssistantStatus.MONITORING -> Color.parseColor("#10B981")
-            AssistantStatus.PAUSED -> Color.parseColor("#F59E0B")
-            AssistantStatus.ALERT -> Color.parseColor("#EF4444")
-        }
-        statusDotView?.background = createDotDrawable(color)
-
-        if (state.totalAlertCount > 0) {
-            alertBadgeView?.visibility = View.VISIBLE
-            alertBadgeView?.text = state.totalAlertCount.toString()
-        } else {
-            alertBadgeView?.visibility = View.GONE
-        }
-    }
-
-    private fun initMediaProjection(resultCode: Int, data: Intent, triggerInstantCheck: Boolean = false) {
-        try {
-            mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
-            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    releaseCaptureResources()
-                    FactCheckServiceManager.setMediaProjectionActive(false)
-                    safeStartForegroundNotification(false)
-                    updateBubbleUi()
-                }
-            }, Handler(Looper.getMainLooper()))
-
-            safeStartForegroundNotification(true)
-
-            setupVirtualDisplay()
+                    override fun onCapturedContentResize(width: Int, height: Int) {
+                        if (id == session && width > 0 && height > 0) resize(width, height)
+                    }
+                },
+                Handler(Looper.getMainLooper()),
+            )
+            val metrics = resources.displayMetrics
+            captureThread = HandlerThread("LtmCapture").apply { start() }
+            createReader(metrics.widthPixels, metrics.heightPixels)
+            display =
+                p.createVirtualDisplay(
+                    "LtmFactCheck",
+                    reader!!.width,
+                    reader!!.height,
+                    metrics.densityDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    reader!!.surface,
+                    null,
+                    null,
+                )
+            FactCheckServiceManager.clearContext()
             FactCheckServiceManager.setMediaProjectionActive(true)
-            FactCheckServiceManager.updateStatus(AssistantStatus.MONITORING)
-            updateBubbleUi()
-
-            startContinuousScreenAnalysisLoop()
-
-            if (triggerInstantCheck) {
-                serviceScope.launch {
-                    delay(350)
-                    executeInstantScreenCheck()
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            FactCheckServiceManager.setMediaProjectionActive(false)
-            safeStartForegroundNotification(false)
-        }
-    }
-
-    /**
-     * Khởi tạo VirtualDisplay kết nối với ImageReader kèm Handler chuyên dụng
-     * Bắt tín hiệu khung hình thực tế từ hệ thống Android
-     */
-    private fun setupVirtualDisplay() {
-        val metrics = resources.displayMetrics
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val densityDpi = metrics.densityDpi
-
-        val scale = 0.75f
-        val captureWidth = (width * scale).toInt()
-        val captureHeight = (height * scale).toInt()
-
-        captureThread = HandlerThread("ScreenCaptureThread").apply { start() }
-        captureHandler = Handler(captureThread!!.looper)
-
-        imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 3)
-        imageReader?.setOnImageAvailableListener({ reader ->
-            try {
-                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-                val bitmap = convertImageToBitmap(image)
-                image.close()
-                if (bitmap != null) {
-                    latestScreenBitmap?.recycle()
-                    latestScreenBitmap = bitmap
-                    FactCheckServiceManager.recordFrameCaptured()
-                }
-            } catch (_: Exception) {}
-        }, captureHandler)
-
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "FactCheckScreenCapture",
-            captureWidth,
-            captureHeight,
-            densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface,
-            null,
-            null
-        )
-    }
-
-    private fun startContinuousScreenAnalysisLoop() {
-        serviceScope.launch(Dispatchers.Default) {
-            while (isActive) {
-                val settings = FactCheckServiceManager.settings.value
-                val sampleIntervalMs = (settings.sampleRateSeconds * 1000L).coerceAtLeast(800L)
-
-                if (!isProjectionPaused && mediaProjection != null) {
-                    processScreenFrame()
-                }
-                delay(sampleIntervalMs)
-            }
-        }
-    }
-
-    private suspend fun processScreenFrame() {
-        val bitmap = latestScreenBitmap
-        if (bitmap == null || bitmap.isRecycled) return
-
-        try {
-            val bitmapCopy = synchronized(this) {
-                if (bitmap.isRecycled) return
-                bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
-            } ?: return
-
-            val hasChanged = frameDetector.hasFrameChanged(bitmapCopy)
-            if (!hasChanged) {
-                bitmapCopy.recycle()
-                return
-            }
-
-            withContext(Dispatchers.Main) {
-                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.RUNNING_OCR)
-            }
-
-            val ocrText = ocrProcessor.recognizeText(bitmapCopy)
-            bitmapCopy.recycle()
-
-            if (ocrText.isBlank()) {
-                withContext(Dispatchers.Main) {
-                    FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.IDLE)
-                }
-                return
-            }
-
-            withContext(Dispatchers.Main) {
-                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.EXTRACTING_CLAIMS)
-            }
-            val claims = claimExtractor.extractClaims(ocrText)
-            if (claims.isEmpty()) {
-                withContext(Dispatchers.Main) {
-                    FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.IDLE)
-                }
-                return
-            }
-
-            val topClaim = claims.first()
-            if (topClaim.normalizedClaim == lastAnalyzedClaim && System.currentTimeMillis() - lastAnalysisTimestamp < 8000L) {
-                withContext(Dispatchers.Main) {
-                    FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.IDLE)
-                }
-                return
-            }
-
-            lastAnalyzedClaim = topClaim.normalizedClaim
-            lastAnalysisTimestamp = System.currentTimeMillis()
-
-            withContext(Dispatchers.Main) {
-                FactCheckServiceManager.updateScreenContent(
-                    rawText = ocrText,
-                    claim = topClaim.normalizedClaim,
-                    detectedApp = topClaim.detectedAppName
-                )
-                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.RETRIEVING_EVIDENCE)
-            }
-
-            val record = factCheckEngine.verifyClaim(
-                extractedClaim = topClaim.normalizedClaim,
-                sourceApp = topClaim.detectedAppName,
-                rawScreenText = ocrText
-            )
-
-            repository.saveRecord(record)
-
-            withContext(Dispatchers.Main) {
-                FactCheckServiceManager.onNewFactCheckRecord(record)
-                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.FINISHED)
-                updateBubbleUi()
-
-                if (record.isAlerted) {
-                    showOnScreenResultCard(record)
-                    triggerAlertNotification(record)
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            withContext(Dispatchers.Main) {
-                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.IDLE)
-            }
-        }
-    }
-
-    private fun convertImageToBitmap(image: Image): Bitmap? {
-        return try {
-            val planes = image.planes
-            if (planes.isEmpty()) return null
-            val buffer: ByteBuffer = planes[0].buffer
-            buffer.rewind()
-            val pixelStride = planes[0].pixelStride
-            val rowStride = planes[0].rowStride
-            val rowPadding = rowStride - pixelStride * image.width
-
-            val rawBitmap = Bitmap.createBitmap(
-                image.width + rowPadding / pixelStride,
-                image.height,
-                Bitmap.Config.ARGB_8888
-            )
-            rawBitmap.copyPixelsFromBuffer(buffer)
-
-            if (rowPadding == 0) {
-                rawBitmap
-            } else {
-                val cropped = Bitmap.createBitmap(rawBitmap, 0, 0, image.width, image.height)
-                rawBitmap.recycle()
-                cropped
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
-
-    /**
-     * THỰC HIỆN KIỂM CHỨNG TỨC THỜI BẰNG CÁCH CHỤP THỰC TẾ KHUNG HÌNH HIỆN TẠI
-     * HIỂN THỊ KẾT QUẢ TRỰC TIẾP TRÊN MÀN HÌNH ĐANG XEM (TIKTOK, YOUTUBE, BÁO CHÍ...), KHÔNG QUAY VỀ APP CHÍNH
-     */
-    private fun executeInstantScreenCheck() {
-        serviceScope.launch {
-            withContext(Dispatchers.Main) {
-                Toast.makeText(this@FloatingAssistantService, "🔍 Đang đọc và kiểm chứng màn hình hiện tại...", Toast.LENGTH_SHORT).show()
-                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.CAPTURING_FRAME)
-            }
-
-            // Nếu chưa được cấp quyền đọc màn hình, gọi màn hình trong suốt để xin cấp quyền ngay trên app hiện tại
-            if (mediaProjection == null) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@FloatingAssistantService, "Vui lòng cho phép quyền chia sẻ màn hình để đọc nội dung", Toast.LENGTH_SHORT).show()
-                }
-                requestMediaProjectionFromFloating()
-                return@launch
-            }
-
-            var ocrText = ""
-            var targetApp = "Màn hình trực tiếp"
-
-            // 1. Thử lấy khung hình tươi mới nhất từ ImageReader
-            var currentBmp: Bitmap? = null
-            try {
-                val directImage = imageReader?.acquireLatestImage()
-                if (directImage != null) {
-                    currentBmp = convertImageToBitmap(directImage)
-                    directImage.close()
-                }
-            } catch (_: Exception) {}
-
-            // 2. Nếu ImageReader chưa có sẵn, sử dụng khung hình gần nhất đã lưu trong bộ đệm
-            if (currentBmp == null) {
-                val cached = latestScreenBitmap
-                if (cached != null && !cached.isRecycled) {
-                    currentBmp = synchronized(this) {
-                        if (!cached.isRecycled) cached.copy(cached.config ?: Bitmap.Config.ARGB_8888, false) else null
+            paused = false
+            status(AssistantStatus.MONITORING)
+            screenQueue = Channel(Channel.CONFLATED)
+            startVerifier()
+            analysisJob =
+                scope.launch {
+                    while (isActive) {
+                        delay(
+                            FactCheckServiceManager.settings.value.sampleRateSeconds.coerceAtLeast(
+                                3
+                            ) * 1000L
+                        )
+                        if (!paused && FactCheckServiceManager.settings.value.continuousMonitoring)
+                            processFrame(false, id)
                     }
                 }
-            }
-
-            // 3. Nếu vẫn chưa có, đợi ngắn 250ms cho VirtualDisplay render khung hình đầu tiên
-            if (currentBmp == null) {
-                delay(250)
-                try {
-                    val directImage = imageReader?.acquireLatestImage()
-                    if (directImage != null) {
-                        currentBmp = convertImageToBitmap(directImage)
-                        directImage.close()
+            if (instant)
+                instantJob =
+                    scope.launch {
+                        delay(600)
+                        processFrame(true, id)
                     }
-                } catch (_: Exception) {}
-            }
-
-            // 4. Nhận diện chữ viết (OCR) từ khung hình thu thập được
-            if (currentBmp != null && !currentBmp.isRecycled) {
-                withContext(Dispatchers.Main) {
-                    FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.RUNNING_OCR)
-                }
-                ocrText = ocrProcessor.recognizeText(currentBmp)
-                currentBmp.recycle()
-            }
-
-            val liveAudio = FactCheckServiceManager.assistantState.value.liveTranscribedAudio
-
-            val combinedContent = if (ocrText.isNotBlank()) {
-                ocrText
-            } else if (liveAudio.isNotBlank()) {
-                targetApp = "Âm thanh video"
-                liveAudio
-            } else {
-                FactCheckServiceManager.assistantState.value.currentScreenText
-            }
-
-            if (combinedContent.isNotBlank()) {
-                withContext(Dispatchers.Main) {
-                    FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.EXTRACTING_CLAIMS)
-                }
-                val claims = claimExtractor.extractClaims(combinedContent)
-                val topClaim = claims.firstOrNull()?.normalizedClaim ?: combinedContent.lines().firstOrNull { it.length > 10 } ?: combinedContent.take(120)
-
-                withContext(Dispatchers.Main) {
-                    FactCheckServiceManager.updateScreenContent(
-                        rawText = combinedContent,
-                        claim = topClaim,
-                        detectedApp = targetApp
-                    )
-                    FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.RETRIEVING_EVIDENCE)
-                }
-
-                val record = factCheckEngine.verifyClaim(
-                    extractedClaim = topClaim,
-                    sourceApp = targetApp,
-                    rawScreenText = combinedContent
-                )
-
-                repository.saveRecord(record)
-                withContext(Dispatchers.Main) {
-                    FactCheckServiceManager.onNewFactCheckRecord(record)
-                    FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.FINISHED)
-                    updateBubbleUi()
-                    showOnScreenResultCard(record)
-                }
-            } else {
-                // CHƯA ĐỦ CƠ SỞ: Không phát hiện văn bản rõ ràng hoặc âm thanh
-                // Hiển thị trực tiếp Thẻ kết quả "CHƯA ĐỦ CƠ SỞ" ngay trên màn hình, KHÔNG quay về MainActivity
-                withContext(Dispatchers.Main) {
-                    FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.IDLE)
-                    val noContentRecord = FactCheckRecord(
-                        id = UUID.randomUUID().toString(),
-                        originalClaim = "Không phát hiện văn bản trên màn hình hiện tại",
-                        normalizedClaim = "Chưa phát hiện văn bản hoặc tuyên bố rõ ràng trên khung hình hiện tại",
-                        sourceApp = "Màn hình ứng dụng hiện tại",
-                        rawScreenText = "Khung hình hiện tại không phát hiện văn bản hoặc phụ đề rõ ràng.",
-                        verdict = FactCheckVerdict.CHUA_DU_BANG_CHUNG,
-                        confidence = 0.5f,
-                        shortExplanation = "Chưa đủ cơ sở kết luận: Khung hình hiện tại chưa có văn bản, số liệu hoặc tuyên bố để kiểm chứng.",
-                        detailedExplanation = "Hệ thống đã quét màn hình thành công nhưng không tìm thấy đoạn văn bản rõ nét hoặc phụ đề nhận diện được.\n\n• Hướng dẫn kiểm chứng:\n1. Cuộn màn hình đến phần bài viết, tiêu đề hoặc phần bình luận của bài đăng.\n2. Nếu đang xem video có tiếng nói (TikTok, YouTube Shorts, Reels), hãy chạm nút '🎙️ Bật nhận diện âm thanh video (STT)' trên bảng điều khiển để hệ thống nghe và kiểm chứng trực tiếp lời nói trong video.\n3. Hoặc chạm vào '💬 Hỏi AI' để nhập trực tiếp nội dung bạn muốn kiểm tra.",
-                        evidence = "Hệ thống OCR cục bộ và Speech-To-Text chưa nhận diện được tín hiệu văn bản/lời nói trên màn hình tại thời điểm này.",
-                        references = listOf(
-                            ReferenceSource(
-                                title = "Hướng dẫn kiểm chứng màn hình & video",
-                                publisher = "LTM FactCheck AI",
-                                url = "https://factcheck.org",
-                                publishDate = "Hôm nay",
-                                supportingSnippet = "Hỗ trợ đọc chữ từ bài viết, tiêu đề, bình luận hoặc chuyển giọng nói video thành văn bản.",
-                                isPrimarySource = true
-                            )
-                        ),
-                        checkedAt = System.currentTimeMillis(),
-                        isAlerted = false
-                    )
-                    showOnScreenResultCard(noContentRecord)
-                }
-            }
-        }
-    }
-
-    private fun requestMediaProjectionFromFloating() {
-        try {
-            val intent = Intent(this, TransparentProjectionActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
-            startActivity(intent)
         } catch (e: Exception) {
-            e.printStackTrace()
-            Toast.makeText(this, "Không thể mở yêu cầu cấp quyền đọc màn hình", Toast.LENGTH_SHORT).show()
+            releaseSession()
+            foreground(false)
+            fail(e)
         }
     }
 
-    private fun triggerAlertNotification(record: FactCheckRecord) {
-        val openDetailIntent = PendingIntent.getActivity(
-            this,
-            record.id.hashCode(),
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                putExtra("NAVIGATE_TO_DETAIL", record.id)
+    private fun createReader(width: Int, height: Int) {
+        val scale = minOf(1f, 1440f / maxOf(width, height))
+        reader =
+            ImageReader.newInstance(
+                (width * scale).toInt().coerceAtLeast(1),
+                (height * scale).toInt().coerceAtLeast(1),
+                PixelFormat.RGBA_8888,
+                2,
+            )
+        val ownerSession = session
+        reader!!.setOnImageAvailableListener(
+            { r ->
+                runCatching {
+                    r.acquireLatestImage()?.use { image ->
+                        if (ownerSession != session || r !== reader) return@use
+                        val now = SystemClock.elapsedRealtime()
+                        if (!captureNow && now - lastFrameAt < 800L) return@use
+                        captureNow = false
+                        lastFrameAt = now
+                        val plane = image.planes[0]
+                        val paddedWidth =
+                            image.width +
+                                (plane.rowStride - plane.pixelStride * image.width) /
+                                    plane.pixelStride
+                        val padded =
+                            Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
+                        padded.copyPixelsFromBuffer(plane.buffer)
+                        val cropped = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
+                        if (cropped !== padded) padded.recycle()
+                        synchronized(frameLock) {
+                            if (ownerSession == session && r === reader) {
+                                frame?.recycle()
+                                frame = cropped
+                            } else cropped.recycle()
+                        }
+                        FactCheckServiceManager.recordFrameCaptured()
+                    }
+                }
             },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            Handler(captureThread!!.looper),
         )
-
-        val notification = NotificationCompat.Builder(this, FactCheckApplication.ALERT_CHANNEL_ID)
-            .setContentTitle("⚠️ Cảnh báo: ${record.verdict.primaryVerdict.titleVi} (${record.verdict.titleVi})")
-            .setContentText(record.normalizedClaim)
-            .setStyle(NotificationCompat.BigTextStyle().bigText("${record.shortExplanation}\n\nNguồn: ${record.references.firstOrNull()?.publisher ?: "Kiểm chứng độc lập"}"))
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setAutoCancel(true)
-            .setContentIntent(openDetailIntent)
-            .build()
-
-        val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
-        manager.notify(FactCheckApplication.ALERT_NOTIFICATION_ID, notification)
     }
 
-    private fun pauseMonitoring() {
-        isProjectionPaused = true
-        FactCheckServiceManager.updateStatus(AssistantStatus.PAUSED)
-        updateBubbleUi()
+    private fun resize(w: Int, h: Int) {
+        runCatching {
+                display?.surface = null
+                reader?.close()
+                createReader(w, h)
+                display?.resize(
+                    reader!!.width,
+                    reader!!.height,
+                    resources.displayMetrics.densityDpi,
+                )
+                display?.surface = reader!!.surface
+                latestScreenText = ""
+            }
+            .onFailure { fail(it) }
     }
 
-    private fun resumeMonitoring() {
-        isProjectionPaused = false
-        FactCheckServiceManager.updateStatus(AssistantStatus.MONITORING)
-        updateBubbleUi()
+    private fun instant() {
+        if (projection == null) {
+            startActivity(
+                Intent(this, TransparentProjectionActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            return
+        }
+        if (instantJob?.isActive == true) return
+        instantJob = scope.launch { processFrame(true, session) }
     }
 
-    private fun stopMonitoring() {
-        releaseCaptureResources()
-        audioSpeechEngine?.stopListening()
-        FactCheckServiceManager.setAudioActive(false)
-        FactCheckServiceManager.setMediaProjectionActive(false)
-        FactCheckServiceManager.updateStatus(AssistantStatus.IDLE)
-        safeStartForegroundNotification(false)
-        updateBubbleUi()
-    }
-
-    private fun releaseCaptureResources() {
-        try {
-            virtualDisplay?.release()
-            virtualDisplay = null
-            imageReader?.close()
-            imageReader = null
-            captureThread?.quitSafely()
-            captureThread = null
-            captureHandler = null
-            mediaProjection?.stop()
-            mediaProjection = null
-            latestScreenBitmap?.recycle()
-            latestScreenBitmap = null
-        } catch (e: Exception) {
-            e.printStackTrace()
+    private suspend fun processFrame(force: Boolean, id: Long) {
+        if (sampling.isLocked) return
+        sampling.withLock {
+            val epoch = analysisEpoch
+            var image: Bitmap? = null
+            val previousPanel = panel
+            val previousVisibility = previousPanel?.visibility
+            try {
+                if (paused || id != session) return
+                previousPanel?.visibility = View.GONE
+                bubble?.visibility = View.INVISIBLE
+                delay(60)
+                captureNow = true
+                delay(180)
+                image =
+                    synchronized(frameLock) {
+                        frame?.takeUnless { it.isRecycled }?.copy(Bitmap.Config.ARGB_8888, false)
+                    }
+                bubble?.visibility = View.VISIBLE
+                if (panel === previousPanel && previousVisibility != null)
+                    previousPanel.visibility = previousVisibility
+                val bitmap = image ?: return
+                if (force && checkingText.isBlank())
+                    FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.RUNNING_OCR)
+                val raw = ocr.recognizeText(bitmap).trim()
+                if (paused || id != session || epoch != analysisEpoch) return
+                val text = ScreenTextExtractor.extract(raw)
+                if (text != latestScreenText) {
+                    latestScreenText = text
+                    FactCheckServiceManager.clearContext()
+                    FactCheckServiceManager.updateScreenContent(
+                        raw.take(12000),
+                        text,
+                        "Màn hình được chia sẻ",
+                    )
+                    lastScreenResult
+                        ?.takeIf { it.originalClaim == text }
+                        ?.let {
+                            FactCheckServiceManager.onNewFactCheckRecord(it, countAsCheck = false)
+                            FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.FINISHED)
+                            showResult(it)
+                        }
+                }
+                if (text.isBlank()) {
+                    if (force)
+                        fail(
+                            FactCheckException(
+                                "Không đọc được chữ. Thử nội dung có phụ đề hoặc nhập văn bản."
+                            )
+                        )
+                    return
+                }
+                if (
+                    !force &&
+                        (text == lastText ||
+                            text == queuedText ||
+                            text == checkingText ||
+                            SystemClock.elapsedRealtime() < retryAt)
+                )
+                    return
+                queuedText = text
+                screenQueue?.trySend(ScreenSnapshot(text, raw.take(12000), id, epoch, force))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (id == session) fail(e)
+            } finally {
+                image?.recycle()
+                bubble?.visibility = View.VISIBLE
+                if (panel === previousPanel && previousVisibility != null)
+                    previousPanel.visibility = previousVisibility
+            }
         }
     }
 
-    private fun observeUserEvents() {
-        serviceScope.launch {
-            FactCheckServiceManager.userEvents.collect { event ->
-                when (event) {
-                    FactCheckServiceManager.UserActionEvent.RequestStartMonitoring -> {
-                        if (mediaProjection == null) {
-                            requestMediaProjectionFromFloating()
-                        } else {
-                            resumeMonitoring()
+    private fun startVerifier() {
+        verificationJob?.cancel()
+        val queue = screenQueue ?: return
+        verificationJob =
+            scope.launch {
+                for (snapshot in queue) {
+                    if (queuedText == snapshot.text) queuedText = ""
+                    if (paused || snapshot.session != session || snapshot.epoch != analysisEpoch)
+                        continue
+                    if (
+                        !snapshot.force &&
+                            (snapshot.text != latestScreenText ||
+                                SystemClock.elapsedRealtime() < retryAt)
+                    )
+                        continue
+                    pipeline.withLock {
+                        if (
+                            paused || snapshot.session != session || snapshot.epoch != analysisEpoch
+                        )
+                            return@withLock
+                        if (
+                            !snapshot.force &&
+                                (snapshot.text != latestScreenText ||
+                                    SystemClock.elapsedRealtime() < retryAt)
+                        )
+                            return@withLock
+                        checkingText = snapshot.text
+                        try {
+                            FactCheckServiceManager.updateAnalysisPhase(
+                                AnalysisPhase.RETRIEVING_EVIDENCE
+                            )
+                            val record =
+                                engine.verifyClaim(
+                                    snapshot.text,
+                                    "Màn hình được chia sẻ",
+                                    snapshot.raw,
+                                )
+                            if (
+                                paused ||
+                                    snapshot.session != session ||
+                                    snapshot.epoch != analysisEpoch
+                            )
+                                return@withLock
+                            repository.saveRecord(record)
+                            if (
+                                paused ||
+                                    snapshot.session != session ||
+                                    snapshot.epoch != analysisEpoch
+                            )
+                                return@withLock
+                            lastText = snapshot.text
+                            lastScreenResult = record
+                            retryAt = 0L
+                            requestFailures = 0
+                            // Retain completed checks in history, but never show them over newer
+                            // screen content.
+                            if (snapshot.text == latestScreenText) {
+                                FactCheckServiceManager.onNewFactCheckRecord(record)
+                                FactCheckServiceManager.reportError(null)
+                                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.FINISHED)
+                                status(
+                                    if (record.isAlerted) AssistantStatus.ALERT
+                                    else AssistantStatus.MONITORING
+                                )
+                                showResult(record)
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            requestFailures++
+                            val seconds =
+                                RequestBackoff.seconds(
+                                    requestFailures,
+                                    (e as? FactCheckException)?.retryAfterSeconds,
+                                )
+                            retryAt = SystemClock.elapsedRealtime() + seconds * 1000L
+                            if (snapshot.session == session) fail(e)
+                        } finally {
+                            if (snapshot.session == session && snapshot.epoch == analysisEpoch)
+                                checkingText = ""
                         }
                     }
-                    FactCheckServiceManager.UserActionEvent.RequestPauseMonitoring -> pauseMonitoring()
-                    FactCheckServiceManager.UserActionEvent.RequestResumeMonitoring -> resumeMonitoring()
-                    FactCheckServiceManager.UserActionEvent.RequestStopMonitoring -> stopMonitoring()
-                    FactCheckServiceManager.UserActionEvent.RequestInstantScreenCheck -> executeInstantScreenCheck()
-                    FactCheckServiceManager.UserActionEvent.RequestToggleAudio -> toggleAudioListening()
-                    is FactCheckServiceManager.UserActionEvent.OpenChatWithScreenContext -> showOnScreenChatCard()
-                    FactCheckServiceManager.UserActionEvent.DismissAlert -> {
-                        FactCheckServiceManager.clearAlert()
-                        updateBubbleUi()
+                }
+            }
+    }
+
+    private fun toggleAudio(useMic: Boolean) {
+        if (audioJob?.isActive == true) {
+            stopAudio()
+            return
+        }
+        if (!useMic && projection == null) {
+            fail(FactCheckException("Bắt đầu chia sẻ màn hình trước khi thu âm thanh nội bộ."))
+            return
+        }
+        if (
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.RECORD_AUDIO,
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            openApp()
+            fail(FactCheckException("Cấp quyền âm thanh trong ứng dụng trước."))
+            return
+        }
+        microphone = useMic
+        try {
+            foreground(projection != null)
+        } catch (e: Exception) {
+            microphone = false
+            fail(e)
+            return
+        }
+        val id = session
+        val serial = ++audioSerial
+        audio = AudioCaptureEngine(this)
+        FactCheckServiceManager.setAudioActive(true)
+        audioJob =
+            scope.launch {
+                try {
+                    audio!!.capture(projection, useMic) { wav ->
+                        val spoken = engine.transcribe(wav).trim()
+                        if (spoken.isNotBlank() && id == session && !paused) {
+                            withContext(Dispatchers.Main) {
+                                pipeline.withLock {
+                                    FactCheckServiceManager.clearContext()
+                                    FactCheckServiceManager.updateLiveAudio(spoken)
+                                    FactCheckServiceManager.updateScreenContent(
+                                        spoken,
+                                        spoken,
+                                        if (useMic) "Micro" else "Âm thanh nội bộ",
+                                    )
+                                    FactCheckServiceManager.updateAnalysisPhase(
+                                        AnalysisPhase.RETRIEVING_EVIDENCE
+                                    )
+                                    val record =
+                                        engine.verifyClaim(
+                                            spoken,
+                                            if (useMic) "Micro" else "Âm thanh nội bộ",
+                                            spoken,
+                                        )
+                                    if (id == session && !paused) {
+                                        repository.saveRecord(record)
+                                        FactCheckServiceManager.onNewFactCheckRecord(record)
+                                        showResult(record)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (isActive) fail(e)
+                } finally {
+                    if (serial == audioSerial) {
+                        FactCheckServiceManager.setAudioActive(false)
+                        microphone = false
+                        runCatching { foreground(projection != null) }
                     }
                 }
+            }
+    }
+
+    private fun stopAudio() {
+        audioSerial++
+        audioJob?.cancel()
+        audioJob = null
+        audio?.stop()
+        audio = null
+        microphone = false
+        FactCheckServiceManager.setAudioActive(false)
+    }
+
+    private fun pause() {
+        analysisEpoch++
+        paused = true
+        verificationJob?.cancel()
+        checkingText = ""
+        queuedText = ""
+        instantJob?.cancel()
+        stopAudio()
+        status(AssistantStatus.PAUSED)
+    }
+
+    private fun resume() {
+        paused = false
+        retryAt = 0L
+        requestFailures = 0
+        FactCheckServiceManager.reportError(null)
+        if (projection != null) startVerifier()
+        status(if (projection != null) AssistantStatus.MONITORING else AssistantStatus.IDLE)
+    }
+
+    private fun stopSession() {
+        releaseSession()
+        FactCheckServiceManager.clearContext()
+        status(AssistantStatus.IDLE)
+        stopSelf()
+    }
+
+    private fun releaseSession() {
+        session++
+        verificationJob?.cancel()
+        verificationJob = null
+        screenQueue?.close()
+        screenQueue = null
+        analysisJob?.cancel()
+        analysisJob = null
+        instantJob?.cancel()
+        instantJob = null
+        stopAudio()
+        val old = projection
+        projection = null
+        runCatching { display?.release() }
+        display = null
+        runCatching { reader?.close() }
+        reader = null
+        captureThread?.quitSafely()
+        captureThread = null
+        synchronized(frameLock) {
+            frame?.recycle()
+            frame = null
+        }
+        runCatching { old?.stop() }
+        lastText = ""
+        lastScreenResult = null
+        latestScreenText = ""
+        queuedText = ""
+        checkingText = ""
+        retryAt = 0L
+        requestFailures = 0
+        FactCheckServiceManager.setMediaProjectionActive(false)
+        FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.IDLE)
+    }
+
+    private fun status(value: AssistantStatus) {
+        FactCheckServiceManager.updateStatus(value)
+        bubble?.text = if (value == AssistantStatus.ALERT) "!" else "✓"
+    }
+
+    private fun fail(error: Throwable) {
+        if (error is FactCheckException && error.pauseMonitoring) pause()
+        val message = error.message ?: "Không hoàn tất thao tác."
+        FactCheckServiceManager.reportError(message)
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
+
+    private fun glass() =
+        GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(0xF5F6F8FC.toInt(), 0xE8DBE4F1.toInt()),
+            )
+            .apply {
+                cornerRadius = dp(24).toFloat()
+                setStroke(dp(1), 0xFFFFFFFF.toInt())
+            }
+
+    private fun showBubble() {
+        if (!Settings.canDrawOverlays(this)) return
+        val view =
+            TextView(this).apply {
+                text = "✓"
+                textSize = 26f
+                gravity = Gravity.CENTER
+                setTextColor(0xFF007AFF.toInt())
+                background = glass()
+                elevation = dp(8).toFloat()
+                contentDescription = "Trợ lý LTM FactCheck. Chạm để mở thao tác."
+            }
+        val type =
+            if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else WindowManager.LayoutParams.TYPE_PHONE
+        val lp =
+            WindowManager.LayoutParams(
+                    dp(56),
+                    dp(56),
+                    type,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    PixelFormat.TRANSLUCENT,
+                )
+                .apply {
+                    gravity = Gravity.TOP or Gravity.START
+                    x = dp(12)
+                    y = dp(160)
+                }
+        var startX = 0
+        var startY = 0
+        var tx = 0f
+        var ty = 0f
+        var moved = false
+        view.setOnTouchListener { _, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = lp.x
+                    startY = lp.y
+                    tx = e.rawX
+                    ty = e.rawY
+                    moved = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - tx
+                    val dy = e.rawY - ty
+                    moved = moved || kotlin.math.abs(dx) + kotlin.math.abs(dy) > dp(8)
+                    lp.x =
+                        (startX + dx.toInt()).coerceIn(
+                            0,
+                            (resources.displayMetrics.widthPixels - dp(56)).coerceAtLeast(0),
+                        )
+                    lp.y =
+                        (startY + dy.toInt()).coerceIn(
+                            0,
+                            (resources.displayMetrics.heightPixels - dp(80)).coerceAtLeast(0),
+                        )
+                    wm.updateViewLayout(view, lp)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!moved) showMenu()
+                    true
+                }
+                else -> false
+            }
+        }
+        wm.addView(view, lp)
+        bubble = view
+        params = lp
+        FactCheckServiceManager.setOverlayActive(true)
+    }
+
+    private fun createPanel(): LinearLayout {
+        panel?.let { runCatching { wm.removeView(it) } }
+        val layout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = glass()
+                setPadding(dp(18), dp(12), dp(18), dp(12))
+                elevation = dp(12).toFloat()
+            }
+        val p =
+            WindowManager.LayoutParams(
+                    minOf(dp(320), resources.displayMetrics.widthPixels - dp(24)),
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    if (Build.VERSION.SDK_INT >= 26)
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                    else WindowManager.LayoutParams.TYPE_PHONE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    PixelFormat.TRANSLUCENT,
+                )
+                .apply {
+                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    y = dp(90)
+                }
+        wm.addView(layout, p)
+        panel = layout
+        return layout
+    }
+
+    private fun row(parent: LinearLayout, text: String, action: () -> Unit) {
+        parent.addView(
+            TextView(this).apply {
+                this.text = text
+                textSize = 16f
+                setTextColor(0xFF172235.toInt())
+                setPadding(0, dp(14), 0, dp(14))
+                setOnClickListener {
+                    panel?.visibility = View.GONE
+                    action()
+                }
+            }
+        )
+    }
+
+    private fun showMenu() {
+        val p = createPanel()
+        row(p, "Kiểm chứng màn hình hiện tại") { instant() }
+        row(p, if (paused) "Tiếp tục" else "Tạm dừng") { if (paused) resume() else pause() }
+        row(p, "Âm thanh nội bộ: bật / tắt") { toggleAudio(false) }
+        row(p, "Mở kết quả và hỏi đáp") { openApp() }
+        row(p, "Kết thúc phiên") { stopSession() }
+        row(p, "Đóng") {}
+    }
+
+    private fun showResult(record: FactCheckRecord) {
+        val p = createPanel()
+        if (record.references.isEmpty()) {
+            p.addView(TextView(this).apply {
+                text = KnowledgeAssessment.NOTICE
+                textSize = 12f
+                setTextColor(0xFF465468.toInt())
+                setPadding(0, dp(4), 0, dp(4))
+            })
+        }
+        row(p, record.verdict.titleVi + "\n" + record.shortExplanation.take(220)) {
+            openResult(record)
+        }
+        record.references.take(2).forEach { source ->
+            row(p, "Nguồn: ${source.title.take(70)}") {
+                runCatching {
+                    startActivity(
+                        Intent(Intent.ACTION_VIEW, android.net.Uri.parse(source.url))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            }
+        }
+        row(p, "Xem nhận định và giải thích") { openResult(record) }
+        row(p, "Đóng") {}
+        if (record.isAlerted) {
+            val pending =
+                PendingIntent.getActivity(
+                    this,
+                    2,
+                    Intent(this, MainActivity::class.java)
+                        .putExtra("NAVIGATE_TO_DETAIL", record.id),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+            val notification =
+                NotificationCompat.Builder(this, FactCheckApplication.ALERT_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_launcher_foreground)
+                    .setContentTitle(record.verdict.titleVi)
+                    .setContentText(record.shortExplanation)
+                    .setContentIntent(pending)
+                    .setAutoCancel(true)
+                    .setSilent(!FactCheckServiceManager.settings.value.hapticFeedback)
+                    .build()
+            runCatching {
+                (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(
+                    1002,
+                    notification,
+                )
             }
         }
     }
 
-    private fun openMainActivity() {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
-        startActivity(intent)
+    private fun openResult(r: FactCheckRecord) {
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .putExtra("NAVIGATE_TO_DETAIL", r.id)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        )
     }
 
-    private fun openResultDetail(recordId: String) {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra("NAVIGATE_TO_DETAIL", recordId)
-        }
-        startActivity(intent)
+    private fun openApp() {
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        )
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        releaseSession()
+        scope.cancel()
+        ocr.close()
+        panel?.let { runCatching { wm.removeView(it) } }
+        bubble?.let { runCatching { wm.removeView(it) } }
         FactCheckServiceManager.setOverlayActive(false)
-        stopMonitoring()
-        ocrProcessor.close()
-        audioSpeechEngine?.stopListening()
-        floatingRootView?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (_: Exception) {}
-        }
-        serviceScope.cancel()
+        super.onDestroy()
     }
 
     companion object {
-        const val ACTION_START_PROJECTION = "com.example.action.START_PROJECTION"
-        const val ACTION_PAUSE = "com.example.action.PAUSE"
-        const val ACTION_RESUME = "com.example.action.RESUME"
-        const val ACTION_STOP = "com.example.action.STOP"
-        const val ACTION_INSTANT_CHECK = "com.example.action.INSTANT_CHECK"
-        const val ACTION_TOGGLE_AUDIO = "com.example.action.TOGGLE_AUDIO"
-        const val ACTION_SHOW_RESULT = "com.example.action.SHOW_RESULT"
-        const val ACTION_DISMISS_ALERT = "com.example.action.DISMISS_ALERT"
-
-        const val EXTRA_RESULT_CODE = "extra_result_code"
-        const val EXTRA_RESULT_DATA = "extra_result_data"
-        const val EXTRA_TRIGGER_INSTANT_CHECK = "extra_trigger_instant_check"
+        const val ACTION_START_PROJECTION = "ltm.START_PROJECTION"
+        const val ACTION_INSTANT_CHECK = "ltm.INSTANT"
+        const val ACTION_TOGGLE_AUDIO = "ltm.AUDIO"
+        const val ACTION_TOGGLE_MICROPHONE = "ltm.MICROPHONE"
+        const val ACTION_PAUSE = "ltm.PAUSE"
+        const val ACTION_RESUME = "ltm.RESUME"
+        const val ACTION_STOP = "ltm.STOP"
+        const val ACTION_SHOW_RESULT = "ltm.RESULT"
+        const val ACTION_DISMISS_ALERT = "ltm.DISMISS"
+        const val EXTRA_RESULT_CODE = "result_code"
+        const val EXTRA_RESULT_DATA = "result_data"
+        const val EXTRA_TRIGGER_INSTANT_CHECK = "instant"
     }
 }

@@ -10,8 +10,7 @@ import org.json.JSONObject
 
 @Entity(tableName = "fact_check_records")
 data class FactCheckEntity(
-    @PrimaryKey
-    val id: String,
+    @PrimaryKey val id: String,
     val originalClaim: String,
     val normalizedClaim: String,
     val verdict: String,
@@ -25,7 +24,8 @@ data class FactCheckEntity(
     val confidence: Float,
     val sourceApp: String,
     val rawScreenText: String,
-    val isAlerted: Boolean
+    val isAlerted: Boolean,
+    @androidx.room.ColumnInfo(defaultValue = "''") val searchEntryPoint: String = "",
 ) {
     fun toDomain(): FactCheckRecord {
         val refs = mutableListOf<ReferenceSource>()
@@ -40,11 +40,11 @@ data class FactCheckEntity(
                         publisher = obj.optString("publisher"),
                         publishDate = obj.optString("publishDate"),
                         supportingSnippet = obj.optString("supportingSnippet"),
-                        isPrimarySource = obj.optBoolean("isPrimarySource", false)
+                        isPrimarySource = obj.optBoolean("isPrimarySource", false),
                     )
                 )
             }
-        } catch (_: Exception) { }
+        } catch (_: Exception) {}
 
         return FactCheckRecord(
             id = id,
@@ -61,7 +61,8 @@ data class FactCheckEntity(
             confidence = confidence,
             sourceApp = sourceApp,
             rawScreenText = rawScreenText,
-            isAlerted = isAlerted
+            isAlerted = isAlerted,
+            searchEntryPoint = searchEntryPoint,
         )
     }
 
@@ -94,7 +95,8 @@ data class FactCheckEntity(
                 confidence = record.confidence,
                 sourceApp = record.sourceApp,
                 rawScreenText = record.rawScreenText,
-                isAlerted = record.isAlerted
+                isAlerted = record.isAlerted,
+                searchEntryPoint = record.searchEntryPoint,
             )
         }
     }

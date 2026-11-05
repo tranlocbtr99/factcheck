@@ -17,10 +17,34 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-/**
- * Quản lý trạng thái và tương tác giữa UI và FloatingAssistantService
- */
+/** Quản lý trạng thái và tương tác giữa UI và FloatingAssistantService */
 object FactCheckServiceManager {
+
+    private var store: com.example.data.settings.AppSettings? = null
+
+    fun initialize(settings: com.example.data.settings.AppSettings) {
+        store = settings
+        _settings.value = settings.monitoring.value
+    }
+
+    fun reportError(message: String?) {
+        _assistantState.update {
+            it.copy(errorMessage = message, analysisPhase = AnalysisPhase.IDLE)
+        }
+    }
+
+    fun clearContext() {
+        _assistantState.update {
+            it.copy(
+                currentScreenText = "",
+                currentClaim = null,
+                latestRecord = null,
+                liveTranscribedAudio = "",
+                alertMessage = null,
+            )
+        }
+        clearChat()
+    }
 
     private val _assistantState = MutableStateFlow(AssistantState())
     val assistantState: StateFlow<AssistantState> = _assistantState.asStateFlow()
@@ -36,12 +60,19 @@ object FactCheckServiceManager {
 
     sealed interface UserActionEvent {
         data object RequestStartMonitoring : UserActionEvent
+
         data object RequestPauseMonitoring : UserActionEvent
+
         data object RequestResumeMonitoring : UserActionEvent
+
         data object RequestStopMonitoring : UserActionEvent
+
         data object RequestInstantScreenCheck : UserActionEvent
+
         data class OpenChatWithScreenContext(val contextText: String) : UserActionEvent
+
         data object RequestToggleAudio : UserActionEvent
+
         data object DismissAlert : UserActionEvent
     }
 
@@ -68,28 +99,32 @@ object FactCheckServiceManager {
     fun updateScreenContent(
         rawText: String,
         claim: String?,
-        detectedApp: String = "Màn hình trực tiếp"
+        detectedApp: String = "Màn hình trực tiếp",
     ) {
         _assistantState.update {
             it.copy(
                 currentScreenText = rawText,
                 currentClaim = claim,
-                currentAppDetected = detectedApp
+                currentAppDetected = detectedApp,
             )
         }
     }
 
-    fun onNewFactCheckRecord(record: FactCheckRecord) {
+    fun onNewFactCheckRecord(record: FactCheckRecord, countAsCheck: Boolean = true) {
         _assistantState.update { current ->
-            val newAlertCount = if (record.isAlerted) current.totalAlertCount + 1 else current.totalAlertCount
+            val newAlertCount =
+                if (record.isAlerted && countAsCheck) current.totalAlertCount + 1
+                else current.totalAlertCount
             val newStatus = if (record.isAlerted) AssistantStatus.ALERT else current.status
             current.copy(
                 latestRecord = record,
-                totalCheckedCount = current.totalCheckedCount + 1,
+                totalCheckedCount = current.totalCheckedCount + if (countAsCheck) 1 else 0,
                 totalAlertCount = newAlertCount,
                 lastCheckTimestamp = System.currentTimeMillis(),
                 status = newStatus,
-                alertMessage = if (record.isAlerted) "Phát hiện thông tin sai lệch: ${record.normalizedClaim}" else current.alertMessage
+                alertMessage =
+                    if (record.isAlerted) "${record.verdict.titleVi}: ${record.normalizedClaim}"
+                    else current.alertMessage,
             )
         }
     }
@@ -98,7 +133,9 @@ object FactCheckServiceManager {
         _assistantState.update {
             it.copy(
                 alertMessage = null,
-                status = if (it.status == AssistantStatus.ALERT) AssistantStatus.MONITORING else it.status
+                status =
+                    if (it.status == AssistantStatus.ALERT) AssistantStatus.MONITORING
+                    else it.status,
             )
         }
     }
@@ -111,12 +148,13 @@ object FactCheckServiceManager {
         _assistantState.update {
             it.copy(
                 isMediaProjectionActive = active,
-                status = if (active) AssistantStatus.MONITORING else AssistantStatus.IDLE
+                status = if (active) AssistantStatus.MONITORING else AssistantStatus.IDLE,
             )
         }
     }
 
     fun updateSettings(newSettings: MonitoringSettings) {
+        store?.saveMonitoring(newSettings)
         _settings.value = newSettings
     }
 
@@ -133,16 +171,17 @@ object FactCheckServiceManager {
     }
 
     fun startService(context: Context, action: String? = null) {
-        val intent = Intent(context, FloatingAssistantService::class.java).apply {
-            if (action != null) this.action = action
-        }
+        val intent =
+            Intent(context, FloatingAssistantService::class.java).apply {
+                if (action != null) this.action = action
+            }
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
             }
-        } catch (_: Exception) { }
+        } catch (_: Exception) {}
     }
 
     fun stopService(context: Context) {
