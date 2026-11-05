@@ -44,3 +44,9 @@ Quy ước: [x] chỉ khi có bằng chứng; việc báo cáo trước nhưng c
 - [x] T14: kiểm tra bổ sung: 21 Android tests, 16 backend tests, lintDebug và signed assembleRelease; vẫn chưa phải nghiệm thu trên thiết bị.
 - [ ] T15: thử trên iQOO: đổi nội dung khi Gemini đang xử lý, không gửi lại màn hình đứng yên, tạm dừng/hủy, đọc đúng/sai/nguồn và kiểm tra quota thực tế.
 - [ ] T16: dùng khóa hợp lệ chạy một lượt kiểm chứng thật, xác nhận model hỗ trợ Search cùng JSON và mở nguồn đối chiếu. Cập nhật Worker nếu dùng backend riêng.
+
+## Đợt 3.1.1 — phản hồi lỗi hạn mức và bỏ Fact Check Tools
+- [x] T17: phân loại 429 theo QuotaFailure/RetryInfo, tuân thủ thời gian chờ; quota ngày/0/không rõ thì tạm dừng gửi tự động, không tiếp tục gọi mỗi 30 giây.
+- [x] T18: bỏ Fact Check Tools khỏi nguồn kiểm chứng mới và liên kết hồ sơ cũ; prompt yêu cầu Gemini tìm bài gốc, không chuyển hướng tra cứu thay kết luận.
+- [x] T19: 28 Android tests, 20 backend tests; kiểm tra các loại quota, thông tin bí mật không lọt vào thông báo, chờ tăng dần và chặn nguồn không muốn dùng.
+- [ ] T20: xác định quota thật bằng bản mới trên thiết bị và chạy một lần kiểm chứng có nguồn sau khi project/model có quota. Không thể sửa quota tài khoản chỉ bằng APK.

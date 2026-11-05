@@ -18,7 +18,12 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
-class FactCheckException(message: String) : IOException(message)
+class FactCheckException(
+    message: String,
+    val retryAfterSeconds: Long? = null,
+    val pauseMonitoring: Boolean = false,
+    val reason: String? = null,
+) : IOException(message)
 
 class FactCheckEngine(private val settings: AppSettings) {
     private val client =
@@ -74,7 +79,18 @@ class FactCheckEngine(private val settings: AppSettings) {
                                     }
                                 if (!it.isSuccessful)
                                     throw FactCheckException(
-                                        json.optString("error", "Dịch vụ gặp lỗi (${it.code}).")
+                                        json.optString("error", "Dịch vụ gặp lỗi (${it.code})."),
+                                        retryAfterSeconds =
+                                            json
+                                                .optLong("retryAfterSeconds", 0)
+                                                .takeIf { value -> value > 0 }
+                                                ?.coerceAtMost(86400),
+                                        pauseMonitoring =
+                                            json.optBoolean(
+                                                "pauseMonitoring",
+                                                it.code in listOf(401, 403, 404, 429),
+                                            ),
+                                        reason = json.optString("reason").take(80),
                                     )
                                 if (continuation.isActive) continuation.resume(json)
                             } catch (e: Exception) {

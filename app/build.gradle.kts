@@ -12,8 +12,8 @@ android {
         applicationId = "vn.ltm.factcheck"
         minSdk = 24
         targetSdk = 36
-        versionCode = 30100
-        versionName = "3.1.0"
+        versionCode = 30101
+        versionName = "3.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import worker,{extractGrounding,validateAssessment,Budget} from '../src/worker.js';
+import worker,{extractGrounding,validateAssessment,Budget,providerError} from '../src/worker.js';
 test('health reports missing credentials honestly',async()=>{let r=await worker.fetch(new Request('https://test/health'),{});assert.equal((await r.json()).status,'unconfigured');});
 test('never permit unauthenticated paid requests',async()=>{let r=await worker.fetch(new Request('https://test/verify',{method:'POST',body:'{}'}),{GEMINI_API_KEY:'test',ACCESS_TOKEN:'secret'});assert.equal(r.status,401);});
 test('source must be https and linked to a grounded segment',()=>{assert.deepEqual(extractGrounding({candidates:[{groundingMetadata:{groundingChunks:[{web:{uri:'javascript:alert(1)',title:'x'}},{web:{uri:'https://example.org',title:'x'}}],groundingSupports:[]}}]}),[]);});
@@ -65,4 +65,27 @@ test('invalid requests do not consume quota or call a provider',async()=>{
   const r=await worker.fetch(new Request('https://test/verify',{method:'POST',headers:{Authorization:'Bearer secret'},body}),env);assert.equal(r.status,400);
  }
  assert.equal(reservations,0);
+});
+
+test('429 minute limits respect RetryInfo without exposing provider message',()=>{
+ const e=providerError(429,{error:{message:'SECRET must not be shown',details:[{'@type':'type.googleapis.com/google.rpc.QuotaFailure',violations:[{quotaId:'GenerateRequestsPerMinutePerProjectPerModel'}]},{'@type':'type.googleapis.com/google.rpc.RetryInfo',retryDelay:'72.4s'}]}});
+ assert.equal(e.reason,'RATE_LIMIT');assert.equal(e.retryAfterSeconds,73);assert.equal(e.pauseMonitoring,false);assert.doesNotMatch(e.message,/SECRET/);
+});
+test('daily, zero and unknown quota pause instead of retrying every 30 seconds',()=>{
+ for(const [violation,reason] of [[{quotaId:'GenerateRequestsPerDayPerProject'},'DAILY_QUOTA'],[{quotaValue:'0'},'NO_QUOTA']]) {
+  const e=providerError(429,{error:{details:[{'@type':'type.googleapis.com/google.rpc.QuotaFailure',violations:[violation]}]}});assert.equal(e.reason,reason);assert.equal(e.pauseMonitoring,true);
+ }
+ assert.equal(providerError(429,{}).pauseMonitoring,true);
+ assert.equal(providerError(429,{},'90').retryAfterSeconds,90);
+});
+test('upstream quota diagnostics reach the Android client in a safe response',async t=>{
+ const originalFetch=globalThis.fetch;t.after(()=>{globalThis.fetch=originalFetch});globalThis.fetch=async()=>Response.json({error:{message:'secret-key',details:[{'@type':'type.googleapis.com/google.rpc.QuotaFailure',violations:[{quotaValue:'0'}]}]}},{status:429});
+ const env={GEMINI_API_KEY:'test',ACCESS_TOKEN:'secret',BUDGET:{idFromName:()=>0,get:()=>({fetch:async()=>new Response('{}')})}};
+ const r=await worker.fetch(new Request('https://test/verify',{method:'POST',headers:{Authorization:'Bearer secret'},body:JSON.stringify({claim:'Nội dung'})}),env);const d=await r.json();assert.equal(r.status,429);assert.equal(d.reason,'NO_QUOTA');assert.equal(d.pauseMonitoring,true);assert.doesNotMatch(JSON.stringify(d),/secret-key/);
+});
+
+test('Google Fact Check Tools is not accepted as verification evidence',()=>{
+ const metadata={groundingChunks:[{web:{uri:'https://toolbox.google.com/factcheck/explorer',title:'Fact Check Tools'}}],groundingSupports:[{groundingChunkIndices:[0],segment:{text:'Search'}}]};
+ assert.deepEqual(extractGrounding({candidates:[{groundingMetadata:metadata}]}),[]);
+ const result=validateAssessment({verdict:'DUNG',shortExplanation:'x',detailedExplanation:'y',sourceIds:[0]},[{id:0,url:'https://toolbox.google.com/factcheck/explorer'}],'Claim');assert.equal(result.verdict,'CHUA_DU_BANG_CHUNG');
 });

@@ -1,4 +1,4 @@
-# LTM FactCheck 3.1.0
+# LTM FactCheck 3.1.1
 
 Android app for evidence-backed fact checking, screen OCR, audio transcription and follow-up questions. Kotlin + Compose + Room. No keyword verdict database, seeded history, or fabricated fallback answers.
 
@@ -7,7 +7,7 @@ Android app for evidence-backed fact checking, screen OCR, audio transcription a
 - JDK 21, Android SDK 36.1, build-tools 36.0.0.
 - `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`
 - Debug uses the standard local Android debug keystore; release requires `KEYSTORE_PATH`, `KEY_ALIAS`, `STORE_PASSWORD`, `KEY_PASSWORD`.
-- `applicationId=vn.ltm.factcheck`, versionCode 30100. An update over 2.1.0 requires its original signing certificate. The previously published repository used a different application ID; this branch intentionally matches the existing APK.
+- `applicationId=vn.ltm.factcheck`, versionCode 30101. An update over 2.1.0 requires its original signing certificate. The previously published repository used a different application ID; this branch intentionally matches the existing APK.
 
 ## Connect a real AI service
 
@@ -48,3 +48,9 @@ Start a screen session and grant Android screen-sharing permission. The start ac
 The floating result displays both true and false results, a short explanation and up to two directly openable source links. OCR samples the newest screen independently of network latency; no request is made for unchanged text. At most one screen request is in flight and one newest screen waits. Earlier completed screens can be retained in history but do not overwrite a newer screen's visible result. Pause cancels screen verification; a failed request has a 30-second retry cooldown. Continuous sampling does not capture every transient frame or read video without subtitles. Audio capture/transcription remains a separate optional feature.
 
 The combined Search + structured-output request requires a compatible Gemini model (default gemini-3.8-flash). This follows https://ai.google.dev/gemini-api/docs/generate-content/structured-output . Live account/model availability still requires a real check with credentials. One API request can involve multiple provider searches and is not a fixed-cost operation.
+
+## Quota diagnostics (3.1.1)
+
+Google API 429 can describe rate limits or quota exhaustion; the old generic message did not distinguish these. The app now reads structured QuotaFailure/RetryInfo and numeric Retry-After. Per-day/zero/unknown quotas and persistent access/model/request failures pause automatic sending. Known rate limits respect the provider delay; other transient failures back off (30, 60, 120, 240, 300 seconds). Explicit Resume permits another attempt. This cannot grant account quota. Open Settings → Xem hạn mức Gemini trong AI Studio, check the selected model/project, and retry after resolving the reported limit. Raw provider messages are not exposed.
+
+The user does not want Google Fact Check Tools/Explorer. It is not a verification service or fallback used by this app. Its URLs are excluded from evidence and legacy detail links. Gemini directly evaluates extracted screen text with Search for original sources and returns its answer in the app. Search attribution supplied by the provider remains attribution, not a requirement to perform manual verification.

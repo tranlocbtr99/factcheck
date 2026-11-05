@@ -33,3 +33,13 @@ Source commits: b2ae32b (continuous OCR + single Gemini request), f10a0fb (cache
 - 2.1.0 upgrade on a physical device, live Gemini accuracy, source relevance in real results, and audio capture remain unverified. The backend has not been deployed; private-backend installations must deploy the new Worker to get the one-request contract.
 
 - APK LTMFactCheck-3.1.0.apk SHA-256: ed459c57dca4bca0510eb7730f02aac6a1a9d7374b8530465ed858ea88e4d703. Signature verified, certificate SHA-256 603bef85b172df9d535a0ef70fe31f1e65356082fc971cbf2ee13caa689a495a, identical to 2.1.0. Final assembleRelease: BUILD SUCCESSFUL.
+
+## 3.1.1 — quota handling and excluded Fact Check Tools
+
+- Local source commit c43bd18. Android testDebugUnitTest: 28 tests, 0 failures/errors. Backend: 20 tests pass; Wrangler dry-run passed.
+- Tests cover daily/zero/unknown/rate-limit 429, RetryInfo rounding, Retry-After, persistent model/access failures, bounded exponential backoff, safe error forwarding and refusal to accept Fact Check Tools as evidence.
+- User screenshot confirms screen OCR output and the 3.1.0 Google-429 message, but cannot identify the exact quota type because the old client discarded the error details. No live account quota has been inspected or changed.
+- UI source filtering preserves original source indices in legacy records; original databases are not deleted or rewritten.
+- Physical-device pause/resume and live quota diagnostics remain unverified until the new build is installed. No provider credentials are in source or APK.
+
+- Final testDebugUnitTest/lintDebug/assembleRelease: BUILD SUCCESSFUL. Lint: 0 errors, 46 warnings. APK vn.ltm.factcheck 3.1.1/30101; SHA-256 54b99f3dae79ddaccefe11cb93d5bbd5d1c450893a3a4673d39030595a10cc32; apksigner passed, certificate matches 2.1.0 (603bef85b172df9d535a0ef70fe31f1e65356082fc971cbf2ee13caa689a495a).

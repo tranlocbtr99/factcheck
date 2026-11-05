@@ -37,7 +37,10 @@ internal object GroundedResponse {
 
     fun validUrl(url: String): Boolean =
         url.toHttpUrlOrNull()?.let {
-            it.isHttps && it.username.isEmpty() && it.password.isEmpty()
+            it.isHttps &&
+                it.username.isEmpty() &&
+                it.password.isEmpty() &&
+                it.host !in setOf("toolbox.google.com", "factchecktools.googleapis.com")
         } == true
 
     fun sources(metadata: JSONObject): JSONArray {

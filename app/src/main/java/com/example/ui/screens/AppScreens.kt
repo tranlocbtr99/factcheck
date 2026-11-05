@@ -389,6 +389,7 @@ fun FactCheckDetailScreen(
                 fontWeight = FontWeight.Bold,
             )
             record.references.forEachIndexed { i, ref ->
+                if (!com.example.engine.GroundedResponse.validUrl(ref.url)) return@forEachIndexed
                 Panel {
                     Text("[${i+1}] ${ref.title}", fontWeight = FontWeight.Bold)
                     Caption(
@@ -577,6 +578,7 @@ private fun Toggle(
 
 @Composable
 fun SettingsScreen(viewModel: FactCheckViewModel, onRequestOverlayPermission: () -> Unit) {
+    val settingsContext = LocalContext.current
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val s by viewModel.settings.collectAsStateWithLifecycle()
     val result by viewModel.connectionStatus.collectAsStateWithLifecycle()
@@ -674,6 +676,15 @@ fun SettingsScreen(viewModel: FactCheckViewModel, onRequestOverlayPermission: ()
                 }
             ) {
                 Text("Dùng kết nối cá nhân")
+            }
+            TextButton(
+                onClick = {
+                    settingsContext.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/usage"))
+                    )
+                }
+            ) {
+                Text("Xem hạn mức Gemini trong AI Studio")
             }
             Caption(
                 "Khóa được mã hóa bằng Android Keystore. Lưu kết nối cá nhân sẽ chuyển khỏi chế độ máy chủ."

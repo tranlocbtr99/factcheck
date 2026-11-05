@@ -59,6 +59,7 @@ class FloatingAssistantService : Service() {
     private var queuedText = ""
     private var checkingText = ""
     private var retryAt = 0L
+    private var requestFailures = 0
     private var verificationJob: Job? = null
     private var screenQueue: Channel<ScreenSnapshot>? = null
 
@@ -432,6 +433,7 @@ class FloatingAssistantService : Service() {
                             lastText = snapshot.text
                             lastScreenResult = record
                             retryAt = 0L
+                            requestFailures = 0
                             // Retain completed checks in history, but never show them over newer
                             // screen content.
                             if (snapshot.text == latestScreenText) {
@@ -447,7 +449,13 @@ class FloatingAssistantService : Service() {
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
-                            retryAt = SystemClock.elapsedRealtime() + 30000L
+                            requestFailures++
+                            val seconds =
+                                RequestBackoff.seconds(
+                                    requestFailures,
+                                    (e as? FactCheckException)?.retryAfterSeconds,
+                                )
+                            retryAt = SystemClock.elapsedRealtime() + seconds * 1000L
                             if (snapshot.session == session) fail(e)
                         } finally {
                             if (snapshot.session == session && snapshot.epoch == analysisEpoch)
@@ -559,6 +567,9 @@ class FloatingAssistantService : Service() {
 
     private fun resume() {
         paused = false
+        retryAt = 0L
+        requestFailures = 0
+        FactCheckServiceManager.reportError(null)
         if (projection != null) startVerifier()
         status(if (projection != null) AssistantStatus.MONITORING else AssistantStatus.IDLE)
     }
@@ -600,6 +611,7 @@ class FloatingAssistantService : Service() {
         queuedText = ""
         checkingText = ""
         retryAt = 0L
+        requestFailures = 0
         FactCheckServiceManager.setMediaProjectionActive(false)
         FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.IDLE)
     }
@@ -610,6 +622,7 @@ class FloatingAssistantService : Service() {
     }
 
     private fun fail(error: Throwable) {
+        if (error is FactCheckException && error.pauseMonitoring) pause()
         val message = error.message ?: "Không hoàn tất thao tác."
         FactCheckServiceManager.reportError(message)
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
