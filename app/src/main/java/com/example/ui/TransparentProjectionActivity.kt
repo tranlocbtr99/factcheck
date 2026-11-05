@@ -20,6 +20,9 @@ class TransparentProjectionActivity : ComponentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            com.example.engine.FactCheckServiceManager.updateSettings(
+                com.example.engine.FactCheckServiceManager.settings.value.copy(continuousMonitoring = true)
+            )
             val serviceIntent = Intent(this, FloatingAssistantService::class.java).apply {
                 action = FloatingAssistantService.ACTION_START_PROJECTION
                 putExtra(FloatingAssistantService.EXTRA_RESULT_CODE, result.resultCode)

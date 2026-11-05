@@ -23,6 +23,7 @@ import com.example.engine.*
 import com.example.model.*
 import com.example.ui.TransparentProjectionActivity
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -32,7 +33,7 @@ class FloatingAssistantService : Service() {
     private val pipeline = Mutex()
     private val frameLock = Any()
     private val ocr = OcrProcessor()
-    private val detector = ScreenFrameDetector(0.08f)
+    private val sampling = Mutex()
     private val engine
         get() = (application as FactCheckApplication).repository.engine
 
@@ -53,7 +54,22 @@ class FloatingAssistantService : Service() {
     private var analysisEpoch = 0L
     private var paused = false
     private var lastText = ""
-    private var lastCheck = 0L
+    private var lastScreenResult: FactCheckRecord? = null
+    private var latestScreenText = ""
+    private var queuedText = ""
+    private var checkingText = ""
+    private var retryAt = 0L
+    private var verificationJob: Job? = null
+    private var screenQueue: Channel<ScreenSnapshot>? = null
+
+    private data class ScreenSnapshot(
+        val text: String,
+        val raw: String,
+        val session: Long,
+        val epoch: Long,
+        val force: Boolean,
+    )
+
     private var audio: AudioCaptureEngine? = null
     private var microphone = false
     private var audioSerial = 0L
@@ -190,6 +206,8 @@ class FloatingAssistantService : Service() {
             FactCheckServiceManager.setMediaProjectionActive(true)
             paused = false
             status(AssistantStatus.MONITORING)
+            screenQueue = Channel(Channel.CONFLATED)
+            startVerifier()
             analysisJob =
                 scope.launch {
                     while (isActive) {
@@ -269,7 +287,7 @@ class FloatingAssistantService : Service() {
                     resources.displayMetrics.densityDpi,
                 )
                 display?.surface = reader!!.surface
-                detector.reset()
+                latestScreenText = ""
             }
             .onFailure { fail(it) }
     }
@@ -287,13 +305,15 @@ class FloatingAssistantService : Service() {
     }
 
     private suspend fun processFrame(force: Boolean, id: Long) {
-        if (pipeline.isLocked) return
-        pipeline.withLock {
+        if (sampling.isLocked) return
+        sampling.withLock {
             val epoch = analysisEpoch
             var image: Bitmap? = null
+            val previousPanel = panel
+            val previousVisibility = previousPanel?.visibility
             try {
                 if (paused || id != session) return
-                panel?.visibility = View.GONE
+                previousPanel?.visibility = View.GONE
                 bubble?.visibility = View.INVISIBLE
                 delay(60)
                 captureNow = true
@@ -303,33 +323,49 @@ class FloatingAssistantService : Service() {
                         frame?.takeUnless { it.isRecycled }?.copy(Bitmap.Config.ARGB_8888, false)
                     }
                 bubble?.visibility = View.VISIBLE
-                val bitmap =
-                    image
-                        ?: throw FactCheckException(
-                            "Chưa có khung hình. Hãy thử lại; màn hình được bảo vệ có thể không cho phép đọc."
-                        )
-                if (!force && !detector.hasFrameChanged(bitmap)) return
-                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.RUNNING_OCR)
-                val text = ocr.recognizeText(bitmap).trim().take(12000)
-                if (text.isBlank())
-                    throw FactCheckException(
-                        "Không đọc được chữ. Thử nội dung có phụ đề hoặc chọn ảnh/nhập chữ."
+                if (panel === previousPanel && previousVisibility != null)
+                    previousPanel.visibility = previousVisibility
+                val bitmap = image ?: return
+                if (force && checkingText.isBlank())
+                    FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.RUNNING_OCR)
+                val raw = ocr.recognizeText(bitmap).trim()
+                if (paused || id != session || epoch != analysisEpoch) return
+                val text = ScreenTextExtractor.extract(raw)
+                if (text != latestScreenText) {
+                    latestScreenText = text
+                    FactCheckServiceManager.clearContext()
+                    FactCheckServiceManager.updateScreenContent(
+                        raw.take(12000),
+                        text,
+                        "Màn hình được chia sẻ",
                     )
-                if (!force && text == lastText && System.currentTimeMillis() - lastCheck < 60000)
+                    lastScreenResult
+                        ?.takeIf { it.originalClaim == text }
+                        ?.let {
+                            FactCheckServiceManager.onNewFactCheckRecord(it, countAsCheck = false)
+                            FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.FINISHED)
+                            showResult(it)
+                        }
+                }
+                if (text.isBlank()) {
+                    if (force)
+                        fail(
+                            FactCheckException(
+                                "Không đọc được chữ. Thử nội dung có phụ đề hoặc nhập văn bản."
+                            )
+                        )
                     return
-                FactCheckServiceManager.clearContext()
-                FactCheckServiceManager.updateScreenContent(text, text, "Màn hình được chia sẻ")
-                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.RETRIEVING_EVIDENCE)
-                val record = engine.verifyClaim(text, "Màn hình được chia sẻ", text)
-                if (id != session || paused || epoch != analysisEpoch) return
-                repository.saveRecord(record)
-                lastText = text
-                lastCheck = System.currentTimeMillis()
-                FactCheckServiceManager.onNewFactCheckRecord(record)
-                FactCheckServiceManager.reportError(null)
-                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.FINISHED)
-                status(if (record.isAlerted) AssistantStatus.ALERT else AssistantStatus.MONITORING)
-                if (force || record.isAlerted) showResult(record)
+                }
+                if (
+                    !force &&
+                        (text == lastText ||
+                            text == queuedText ||
+                            text == checkingText ||
+                            SystemClock.elapsedRealtime() < retryAt)
+                )
+                    return
+                queuedText = text
+                screenQueue?.trySend(ScreenSnapshot(text, raw.take(12000), id, epoch, force))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -337,8 +373,89 @@ class FloatingAssistantService : Service() {
             } finally {
                 image?.recycle()
                 bubble?.visibility = View.VISIBLE
+                if (panel === previousPanel && previousVisibility != null)
+                    previousPanel.visibility = previousVisibility
             }
         }
+    }
+
+    private fun startVerifier() {
+        verificationJob?.cancel()
+        val queue = screenQueue ?: return
+        verificationJob =
+            scope.launch {
+                for (snapshot in queue) {
+                    if (queuedText == snapshot.text) queuedText = ""
+                    if (paused || snapshot.session != session || snapshot.epoch != analysisEpoch)
+                        continue
+                    if (
+                        !snapshot.force &&
+                            (snapshot.text != latestScreenText ||
+                                SystemClock.elapsedRealtime() < retryAt)
+                    )
+                        continue
+                    pipeline.withLock {
+                        if (
+                            paused || snapshot.session != session || snapshot.epoch != analysisEpoch
+                        )
+                            return@withLock
+                        if (
+                            !snapshot.force &&
+                                (snapshot.text != latestScreenText ||
+                                    SystemClock.elapsedRealtime() < retryAt)
+                        )
+                            return@withLock
+                        checkingText = snapshot.text
+                        try {
+                            FactCheckServiceManager.updateAnalysisPhase(
+                                AnalysisPhase.RETRIEVING_EVIDENCE
+                            )
+                            val record =
+                                engine.verifyClaim(
+                                    snapshot.text,
+                                    "Màn hình được chia sẻ",
+                                    snapshot.raw,
+                                )
+                            if (
+                                paused ||
+                                    snapshot.session != session ||
+                                    snapshot.epoch != analysisEpoch
+                            )
+                                return@withLock
+                            repository.saveRecord(record)
+                            if (
+                                paused ||
+                                    snapshot.session != session ||
+                                    snapshot.epoch != analysisEpoch
+                            )
+                                return@withLock
+                            lastText = snapshot.text
+                            lastScreenResult = record
+                            retryAt = 0L
+                            // Retain completed checks in history, but never show them over newer
+                            // screen content.
+                            if (snapshot.text == latestScreenText) {
+                                FactCheckServiceManager.onNewFactCheckRecord(record)
+                                FactCheckServiceManager.reportError(null)
+                                FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.FINISHED)
+                                status(
+                                    if (record.isAlerted) AssistantStatus.ALERT
+                                    else AssistantStatus.MONITORING
+                                )
+                                showResult(record)
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            retryAt = SystemClock.elapsedRealtime() + 30000L
+                            if (snapshot.session == session) fail(e)
+                        } finally {
+                            if (snapshot.session == session && snapshot.epoch == analysisEpoch)
+                                checkingText = ""
+                        }
+                    }
+                }
+            }
     }
 
     private fun toggleAudio(useMic: Boolean) {
@@ -432,6 +549,9 @@ class FloatingAssistantService : Service() {
     private fun pause() {
         analysisEpoch++
         paused = true
+        verificationJob?.cancel()
+        checkingText = ""
+        queuedText = ""
         instantJob?.cancel()
         stopAudio()
         status(AssistantStatus.PAUSED)
@@ -439,6 +559,7 @@ class FloatingAssistantService : Service() {
 
     private fun resume() {
         paused = false
+        if (projection != null) startVerifier()
         status(if (projection != null) AssistantStatus.MONITORING else AssistantStatus.IDLE)
     }
 
@@ -451,6 +572,10 @@ class FloatingAssistantService : Service() {
 
     private fun releaseSession() {
         session++
+        verificationJob?.cancel()
+        verificationJob = null
+        screenQueue?.close()
+        screenQueue = null
         analysisJob?.cancel()
         analysisJob = null
         instantJob?.cancel()
@@ -469,9 +594,12 @@ class FloatingAssistantService : Service() {
             frame = null
         }
         runCatching { old?.stop() }
-        detector.reset()
         lastText = ""
-        lastCheck = 0
+        lastScreenResult = null
+        latestScreenText = ""
+        queuedText = ""
+        checkingText = ""
+        retryAt = 0L
         FactCheckServiceManager.setMediaProjectionActive(false)
         FactCheckServiceManager.updateAnalysisPhase(AnalysisPhase.IDLE)
     }
@@ -629,6 +757,16 @@ class FloatingAssistantService : Service() {
         val p = createPanel()
         row(p, record.verdict.titleVi + "\n" + record.shortExplanation.take(220)) {
             openResult(record)
+        }
+        record.references.take(2).forEach { source ->
+            row(p, "Nguồn: ${source.title.take(70)}") {
+                runCatching {
+                    startActivity(
+                        Intent(Intent.ACTION_VIEW, android.net.Uri.parse(source.url))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            }
         }
         row(p, "Xem bằng chứng và nguồn") { openResult(record) }
         row(p, "Đóng") {}

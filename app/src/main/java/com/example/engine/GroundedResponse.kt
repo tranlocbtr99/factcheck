@@ -75,6 +75,35 @@ internal object GroundedResponse {
         return result
     }
 
+    fun singlePass(data: JSONObject): JSONObject {
+        val metadata =
+            data.optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("groundingMetadata")
+                ?: JSONObject()
+        val raw =
+            try {
+                JSONObject(text(data))
+            } catch (e: FactCheckException) {
+                throw e
+            } catch (_: Exception) {
+                throw FactCheckException("Không đọc được kết quả kiểm chứng của Gemini.")
+            }
+        if (raw.opt("verdict") !in setOf("DUNG", "SAI", "CHUA_DU_BANG_CHUNG"))
+            throw FactCheckException("Kết luận của Gemini không hợp lệ.")
+        val sources = sources(metadata)
+        // Source identifiers come from Google's citation metadata, never model-invented URLs.
+        raw.put(
+            "sourceIds",
+            JSONArray().apply {
+                for (i in 0 until sources.length()) put(sources.getJSONObject(i).getInt("id"))
+            },
+        )
+        return assessment(raw, sources)
+            .put(
+                "searchEntryPoint",
+                metadata.optJSONObject("searchEntryPoint")?.optString("renderedContent").orEmpty(),
+            )
+    }
+
     private fun exactId(value: Any?): Int? =
         (value as? Number)?.let {
             val number = it.toDouble()

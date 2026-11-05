@@ -82,12 +82,12 @@ class AppSettings(private val context: Context) {
             runCatching {
                     val o = JSONObject(prefs.getString("monitoring", "{}")!!)
                     MonitoringSettings(
-                        sampleRateSeconds = o.optInt("sampleRate", 8).coerceIn(3, 30),
+                        sampleRateSeconds = o.optInt("sampleRate", 3).coerceIn(3, 30),
                         alertOnlyFalse = o.optBoolean("onlyFalse", false),
                         alertMisleading = o.optBoolean("misleading", true),
                         alertInsufficientEvidence = o.optBoolean("insufficient", false),
                         hapticFeedback = o.optBoolean("haptic", true),
-                        continuousMonitoring = o.optBoolean("continuous", false),
+                        continuousMonitoring = o.optBoolean("continuous", true),
                         reduceTransparency = o.optBoolean("opaque", false),
                         reduceMotion = o.optBoolean("reduceMotion", false),
                     )

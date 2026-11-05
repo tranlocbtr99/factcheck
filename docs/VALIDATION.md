@@ -20,3 +20,16 @@ Install as an update without uninstalling the old app. A compatible key saved by
 - Added tests for thought filtering, strict verdict/explanation types, strict source IDs, invalid source URLs, no second call without sources, malformed upstream JSON, long chat context and invalid requests consuming no quota.
 - APK SHA-256: b5e9f59d07e2ad7e7fde3585ec14b5bb5b4e604c7757c18065c1e4c5d9e86264. apksigner verification succeeded, with certificate identical to supplied 2.1.0. aapt confirmed vn.ltm.factcheck / 3.0.1 / 30001 / minSdk 24 / targetSdk 36.
 - No attached adb device. Live model requests, physical upgrade, image-based visual review and third-party app capture remain unverified. The Worker has not been deployed.
+
+## 3.1.0 — simplified continuous screen flow
+
+Source commits: b2ae32b (continuous OCR + single Gemini request), f10a0fb (cached screen result), e2df70f (duplicate OCR presentation state). Version 3.1.0/30100, package vn.ltm.factcheck.
+
+- Android testDebugUnitTest: 21 tests, 0 failures/errors. Added coverage for short lines, numbers, negation, interface noise, continuous defaults, single-response parsing, missing/invalid evidence and cached result counters. Prior history/settings/Compose tests remain included.
+- Android lintDebug: 0 errors, 44 warnings. Signed assembleRelease succeeded; a final assembleRelease also rebuilds the presentation-state change from e2df70f.
+- Backend: 16 tests pass, including exactly one provider request with Search + responseJsonSchema and rejecting model-invented URLs. Wrangler deploy --dry-run passed.
+- Request contract follows https://ai.google.dev/gemini-api/docs/generate-content/structured-output (Gemini models supporting built-in tools with structured output). This documents the API contract; no live provider call was made.
+- The screen service samples OCR independently while awaiting Gemini, serializes network verification and uses a conflated queue. Pending-screen changes, pause/resume, screen-sharing permissions, visual layout and battery behavior still need a physical-device test. Unit tests do not prove end-to-end continuous capture.
+- 2.1.0 upgrade on a physical device, live Gemini accuracy, source relevance in real results, and audio capture remain unverified. The backend has not been deployed; private-backend installations must deploy the new Worker to get the one-request contract.
+
+- APK LTMFactCheck-3.1.0.apk SHA-256: ed459c57dca4bca0510eb7730f02aac6a1a9d7374b8530465ed858ea88e4d703. Signature verified, certificate SHA-256 603bef85b172df9d535a0ef70fe31f1e65356082fc971cbf2ee13caa689a495a, identical to 2.1.0. Final assembleRelease: BUILD SUCCESSFUL.

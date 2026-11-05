@@ -7,10 +7,10 @@ enum class AlertSensitivity(val labelVi: String, val thresholdDesc: String) {
 }
 
 data class MonitoringSettings(
-    val continuousMonitoring: Boolean = false,
+    val continuousMonitoring: Boolean = true,
     val reduceTransparency: Boolean = false,
     val reduceMotion: Boolean = false,
-    val sampleRateSeconds: Int = 8, // 1: Nhanh (0.5-1s), 3: Cân bằng (2-4s), 8: Tiết kiệm (5-10s)
+    val sampleRateSeconds: Int = 3, // OCR polling; unchanged text is not sent again.
     val alertSensitivity: AlertSensitivity = AlertSensitivity.BALANCED,
     val alertOnlyFalse: Boolean = false,
     val alertMisleading: Boolean = true,

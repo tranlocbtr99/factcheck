@@ -110,14 +110,15 @@ object FactCheckServiceManager {
         }
     }
 
-    fun onNewFactCheckRecord(record: FactCheckRecord) {
+    fun onNewFactCheckRecord(record: FactCheckRecord, countAsCheck: Boolean = true) {
         _assistantState.update { current ->
             val newAlertCount =
-                if (record.isAlerted) current.totalAlertCount + 1 else current.totalAlertCount
+                if (record.isAlerted && countAsCheck) current.totalAlertCount + 1
+                else current.totalAlertCount
             val newStatus = if (record.isAlerted) AssistantStatus.ALERT else current.status
             current.copy(
                 latestRecord = record,
-                totalCheckedCount = current.totalCheckedCount + 1,
+                totalCheckedCount = current.totalCheckedCount + if (countAsCheck) 1 else 0,
                 totalAlertCount = newAlertCount,
                 lastCheckTimestamp = System.currentTimeMillis(),
                 status = newStatus,

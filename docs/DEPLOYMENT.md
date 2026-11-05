@@ -9,7 +9,7 @@ npx wrangler secret put ACCESS_TOKEN
 npm run deploy
 ```
 
-Use an account-owned Gemini API key with access to the configured model and Google Search grounding. Use a long random ACCESS_TOKEN and enter it only in the app's connection settings. Do not commit `.dev.vars` or tokens. Set `GEMINI_MODEL` and `DAILY_LIMIT` in wrangler.jsonc. The Durable Object binding enforces a global daily reservation count before provider requests. Failed requests consume a reservation; one verify task can make two model calls, and grounding can incur additional cost. This is not a monetary cap; configure provider budget controls too.
+Use an account-owned Gemini API key with access to the configured model and Google Search grounding. Use a long random ACCESS_TOKEN and enter it only in the app's connection settings. Do not commit `.dev.vars` or tokens. Set `GEMINI_MODEL` and `DAILY_LIMIT` in wrangler.jsonc. The Durable Object binding enforces a global daily reservation count before provider requests. Failed requests consume a reservation; one verify task makes one model request with Google Search and structured output, and grounding can incur additional cost. This is not a monetary cap; configure provider budget controls too.
 
 The Worker returns explicit HTTP errors for missing configuration, invalid tokens, quota exhaustion and upstream failures. `/health` is public and only reports configuration readiness. Authenticated `/connection` checks server configuration and access token without making a paid model request. `/verify`, `/chat` and `/transcribe` reserve quota. Bodies are bounded before parsing. Request bodies and tokens are not logged by application code.
 

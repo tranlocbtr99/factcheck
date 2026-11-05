@@ -190,11 +190,20 @@ fun DashboardScreen(
             )
             Text(state.status.displayNameVi, color = MaterialTheme.colorScheme.primary)
             Caption(
-                "Cấp quyền chia sẻ để đọc nội dung bạn chọn. Mặc định chỉ kiểm chứng khi bạn yêu cầu; bật theo dõi liên tục trong Cài đặt."
+                "Bật đọc liên tục rồi cấp quyền chia sẻ. App trích chữ trên màn hình, gửi nội dung mới đến Gemini và trả kết luận, giải thích cùng đường dẫn nguồn."
             )
-            Button(onClick = onRequestOverlayPermission, enabled = connection.configured) {
+            Button(
+                onClick = {
+                    viewModel.updateSettings(
+                        viewModel.settings.value.copy(continuousMonitoring = true)
+                    )
+                    onRequestOverlayPermission()
+                },
+                enabled = connection.configured,
+            ) {
                 Text(
-                    if (state.isMediaProjectionActive) "Mở trợ lý nổi" else "Bắt đầu phiên màn hình"
+                    if (state.isMediaProjectionActive) "Mở trợ lý nổi"
+                    else "Bắt đầu kiểm chứng liên tục"
                 )
             }
             if (state.isMediaProjectionActive) {
@@ -678,12 +687,12 @@ fun SettingsScreen(viewModel: FactCheckViewModel, onRequestOverlayPermission: ()
             )
             Toggle(
                 "Theo dõi liên tục",
-                "Tắt: chỉ kiểm chứng khi chạm nút. Bật: có thể phát sinh nhiều yêu cầu AI.",
+                "Đọc màn hình định kỳ, gửi nội dung mới đến Gemini. Nội dung không đổi sẽ không gửi lại.",
                 s.continuousMonitoring,
             ) {
                 viewModel.updateSettings(s.copy(continuousMonitoring = it))
             }
-            Text("Khoảng lấy mẫu: ${s.sampleRateSeconds} giây")
+            Text("Đọc màn hình mỗi: ${s.sampleRateSeconds} giây")
             Slider(
                 s.sampleRateSeconds.toFloat(),
                 { viewModel.updateSettings(s.copy(sampleRateSeconds = it.toInt())) },
@@ -759,7 +768,7 @@ fun SettingsScreen(viewModel: FactCheckViewModel, onRequestOverlayPermission: ()
                 Text("Xóa toàn bộ lịch sử", color = MaterialTheme.colorScheme.error)
             }
         }
-        Caption("LTM FactCheck 3.0 • Kiểm chứng có nguồn • Designed by LocTM")
+        Caption("LTM FactCheck 3.1 • Kiểm chứng có nguồn • Designed by LocTM")
     }
     if (clear)
         AlertDialog(

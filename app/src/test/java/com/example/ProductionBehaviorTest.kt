@@ -55,6 +55,25 @@ class ProductionBehaviorTest {
     }
 
     @Test
+    fun returningToCachedScreenDoesNotCountAnotherPaidCheck() {
+        val record =
+            com.example.model.FactCheckRecord(
+                originalClaim = "Nội dung",
+                normalizedClaim = "Nội dung",
+                verdict = com.example.model.FactCheckVerdict.DUNG,
+                shortExplanation = "Giải thích",
+                detailedExplanation = "Chi tiết",
+                evidence = "Nguồn",
+            )
+        val before = FactCheckServiceManager.assistantState.value.totalCheckedCount
+        FactCheckServiceManager.onNewFactCheckRecord(record)
+        FactCheckServiceManager.clearContext()
+        FactCheckServiceManager.onNewFactCheckRecord(record, countAsCheck = false)
+        assertEquals(before + 1, FactCheckServiceManager.assistantState.value.totalCheckedCount)
+        assertEquals(record.id, FactCheckServiceManager.assistantState.value.latestRecord?.id)
+    }
+
+    @Test
     fun sessionContextIsCleared() {
         FactCheckServiceManager.updateScreenContent("old", "old")
         FactCheckServiceManager.updateLiveAudio("old audio")

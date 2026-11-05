@@ -36,3 +36,11 @@ Quy ước: [x] chỉ khi có bằng chứng; việc báo cáo trước nhưng c
 - T05 mới kiểm tra settings monitoring, round-trip dữ liệu và import lịch sử bằng test; chưa nghiệm thu toàn bộ Keystore/chat trên thiết bị.
 - T06 có Compose smoke tests sáng/tối; chưa kiểm tra ảnh giao diện thực.
 - T04, T07, T10 vẫn cần cấu hình/thiết bị; không đánh dấu hoàn tất.
+
+## Đợt 3.1.0 — đơn giản hóa luồng màn hình
+- [x] T11: đọc OCR liên tục mặc định 3 giây, tách khỏi thời gian chờ Gemini; chỉ giữ nội dung mới nhất trong hàng chờ.
+- [x] T12: một lượt gọi Gemini có Google Search + structured output; nhận đúng/sai/chưa đủ bằng chứng cùng giải thích và nguồn metadata. Test backend xác nhận đúng 1 request.
+- [x] T13: hiển thị cả kết quả đúng/sai và đường dẫn mở được trên nút nổi; không lấy URL do model tự tạo trong JSON.
+- [x] T14: kiểm tra bổ sung: 21 Android tests, 16 backend tests, lintDebug và signed assembleRelease; vẫn chưa phải nghiệm thu trên thiết bị.
+- [ ] T15: thử trên iQOO: đổi nội dung khi Gemini đang xử lý, không gửi lại màn hình đứng yên, tạm dừng/hủy, đọc đúng/sai/nguồn và kiểm tra quota thực tế.
+- [ ] T16: dùng khóa hợp lệ chạy một lượt kiểm chứng thật, xác nhận model hỗ trợ Search cùng JSON và mở nguồn đối chiếu. Cập nhật Worker nếu dùng backend riêng.
